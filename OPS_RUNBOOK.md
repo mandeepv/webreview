@@ -223,6 +223,7 @@ Nothing secret is stored in this repo. This is the map of WHERE to look.
 | `PRICE_ANNUAL` / `PRICE_MONTHLY` | Supabase secrets | Fallback only — the welcome email and Meta Purchase value now come from Dodo's subscription payload. |
 | Rate limits | Code (`capture-email`, `create-checkout`, `resume`) + Postgres `rate_limit_hits` | 10 captures/min/IP, 40/hour/IP, 5/hour per address; 20 checkouts/min/IP, 10 per session per 10 min; 20 resume calls/min/IP. Change in the function source. |
 | Dodo dashboard login | Owner (Mandeep) | |
+| Public review mirror | GitHub `mandeepv/webreview` (**PUBLIC**) | Redacted snapshots for outside reviewers — NOT a clone of this repo. Each commit is the whole tree of a real commit with these replaced: both Supabase project refs → `<DEV_PROJECT_REF>` / `<PROD_PROJECT_REF>`, the Dodo webhook endpoint id → `<WEBHOOK_ENDPOINT_ID>`, test product/subscription ids → `<TEST_…_ID>`, PostHog keys → `phc_…`; `supabase/.temp` left out. **Never `git push` a real branch there** — it would publish all of those. To update: `git archive` the commit, apply the replacements, check the same script reproduces the previous snapshot from its source commit, scan for refs/keys/ids/emails, then commit on top of its `main` as `27843773+mandeepv@users.noreply.github.com`. Last synced 2026-10-05: `a5b237f` → `7bf4097` (first snapshot: `fa25d99` → `3252895`). |
 
 ### ~~Open item — reply-to address~~ — RESOLVED 2026-09-19
 
