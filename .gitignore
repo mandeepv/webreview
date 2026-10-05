@@ -8,4 +8,9 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+# Playwright
+/playwright-report/
+/test-results/
+/coverage/
 supabase/.temp

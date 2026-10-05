@@ -10,10 +10,10 @@ import {
   Shell,
 } from '@/components/ui';
 import { config } from '@/lib/config';
-import { getSession, save } from '@/lib/session';
+import { getSession, readMetaCookies, save } from '@/lib/session';
 import { identify, track } from '@/lib/analytics';
 import { pixel, setPixelUserData } from '@/lib/meta';
-import { JOURNEY_LENGTH, TOTAL_STEPS } from '@/lib/quiz/questions';
+import { EMAIL_POSITION, JOURNEY_LENGTH } from '@/lib/quiz/questions';
 
 // The recoverability watershed: this step creates the Supabase account the
 // purchase will belong to, BEFORE payment (see 02-payments-entitlements.md).
@@ -26,16 +26,26 @@ import { JOURNEY_LENGTH, TOTAL_STEPS } from '@/lib/quiz/questions';
 export default function EmailPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
+  const [hp, setHp] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
 
   useEffect(() => {
-    const n = getSession().answers['name'];
+    const s = getSession();
+    // Already captured (back button from Act 3): a second capture would
+    // re-fire Lead and replay the 9-second build (P2-7c).
+    if (s.emailCaptured) {
+      router.replace('/plan');
+      return;
+    }
+    const n = s.answers['name'];
     setName(typeof n === 'string' && n.trim() ? n.trim() : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const submit = async () => {
+    if (busy) return; // Enter + tap, or a double tap: one capture only (P2-7d)
     setBusy(true);
     setError(null);
     const s = getSession();
@@ -45,12 +55,20 @@ export default function EmailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email,
+          hp,
           sessionId: s.id,
           answers: s.answers,
           utm: s.utm,
           landingVariant: s.landingVariant,
+          // Match keys for the server-side Lead (P2-2).
+          meta: readMetaCookies(),
         }),
       });
+      if (res.status === 429) {
+        setError('Too many attempts. Please wait a minute and try again.');
+        setBusy(false);
+        return;
+      }
       if (!res.ok) throw new Error(`capture-email ${res.status}`);
       const { userId } = (await res.json()) as { userId: string };
       s.emailCaptured = true;
@@ -61,8 +79,10 @@ export default function EmailPage() {
       track('web_funnel_email_captured');
       // User data BEFORE the Lead so this event (and every later one) carries it.
       await setPixelUserData(email, userId);
-      pixel('Lead');
-      router.push('/building');
+      // Same event id as capture-email's server-side Lead → Meta keeps one (P2-2).
+      pixel('Lead', {}, `lead-${s.id}`);
+      // replace: back from /plan must not land on the build screen again (P2-7b).
+      router.replace('/building');
     } catch {
       track('web_funnel_error', { where: 'capture_email' });
       setError('Something went wrong saving your plan. Please try again.');
@@ -73,7 +93,7 @@ export default function EmailPage() {
   return (
     <Shell>
       <ProgressRail
-        fraction={(TOTAL_STEPS + 1) / JOURNEY_LENGTH}
+        fraction={EMAIL_POSITION / JOURNEY_LENGTH}
         onBack={() => router.back()}
       />
       <div className="flex flex-1 flex-col justify-center py-8">
@@ -85,6 +105,17 @@ export default function EmailPage() {
           never lost.
         </p>
         <div className="mt-8 space-y-3">
+          {/* Honeypot: invisible to people and screen readers, filled by bots. */}
+          <input
+            type="text"
+            name="kw_website"
+            tabIndex={-1}
+            autoComplete="off"
+            aria-hidden="true"
+            value={hp}
+            onChange={(e) => setHp(e.target.value)}
+            className="absolute -left-[9999px] h-0 w-0 opacity-0"
+          />
           <input
             type="email"
             inputMode="email"
@@ -92,7 +123,7 @@ export default function EmailPage() {
             placeholder="you@example.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && /.+@.+\..+/.test(email) && submit()}
+            onKeyDown={(e) => e.key === 'Enter' && !busy && /.+@.+\..+/.test(email) && submit()}
             className="w-full rounded-row border border-ink/15 bg-cream px-5 py-4 text-[17px] text-ink outline-none placeholder:text-ink/35 focus:border-forest"
           />
           {error ? <p className="text-[14px] text-clay-deep">{error}</p> : null}
@@ -114,7 +145,7 @@ export default function EmailPage() {
                 s.userId = 'dev-preview-user';
                 s.email = email || 'dev@example.com';
                 save(s);
-                router.push('/building');
+                router.replace('/building');
               }}
               className="mx-auto block text-[12px] text-ink/40 underline"
             >

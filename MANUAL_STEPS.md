@@ -31,6 +31,8 @@ The canonical home is the app repo. Copy, then apply with the existing tooling:
 ```bash
 cp supabase/migrations/20260918000000_web2app.sql ~/mamalearn/supabase/migrations/
 cp supabase/migrations/20260928000000_email_opt_outs.sql ~/mamalearn/supabase/migrations/   # added 2026-09-28 — see §8.6
+cp supabase/migrations/20260930000000_webhook_hardening.sql ~/mamalearn/supabase/migrations/ # added 2026-09-30 — see §8.7
+cp supabase/migrations/20261005000000_event_ordering.sql ~/mamalearn/supabase/migrations/    # added 2026-10-05 — see §8.7
 cd ~/mamalearn && supabase db push        # linked to DEV per house rules
 ```
 (Prod later, owner-run, via `scripts/db-push-prod.sh` — §9.)
@@ -42,6 +44,9 @@ OTP length 6. Do this on dev now, prod in §9. (The iOS app's "Continue with
 Email" — Phase 0 app work — depends on this too.)
 
 ### 2.3 Deploy the edge functions
+**Preferred since 2026-10-05: `scripts/deploy-functions.sh [names…]`** — it refuses to deploy
+anything that isn't committed, pushed and green in CI, shows which project is linked, and
+then runs the same `deploy --no-verify-jwt` commands as below.
 ```bash
 cd <this repo>
 # ALL functions deploy with --no-verify-jwt: this Supabase project uses the
@@ -53,6 +58,7 @@ supabase functions deploy create-checkout --no-verify-jwt
 supabase functions deploy dodo-webhook --no-verify-jwt
 supabase functions deploy winback-sweep --no-verify-jwt
 supabase functions deploy unsubscribe --no-verify-jwt
+supabase functions deploy resume --no-verify-jwt   # added 2026-09-30 (win-back / Safari links)
 ```
 
 ### 2.4 Set function secrets
@@ -81,6 +87,9 @@ Dashboard → SQL editor (pg_cron + pg_net are available on Supabase):
 select cron.schedule(
   'winback-sweep-hourly', '0 * * * *',
   $$ select net.http_get('https://<PROJECT-REF>.supabase.co/functions/v1/winback-sweep?key=<SWEEP_SECRET>') $$
+  -- Preferred since 2026-09-30 (secret out of the URL/logs):
+  -- $$ select net.http_post('https://<PROJECT-REF>.supabase.co/functions/v1/winback-sweep',
+  --      headers := '{"x-sweep-key":"<SWEEP_SECRET>"}'::jsonb) $$
 );
 ```
 
@@ -217,15 +226,21 @@ Code for all of this is in the repo; these are the parts only you can do.
       Additive only (one new table, RLS on, no policies) — safe for the live app.
 - [ ] **`FUNNEL_PROXY_SECRET`** — `openssl rand -hex 32`, set the SAME value in
       Supabase secrets AND in Vercel as a plain server env var (NOT
-      `NEXT_PUBLIC_`). Without it, anyone can call the edge functions directly
-      with the public anon key. Test mode tolerates it missing; **live mode
-      refuses every funnel request until it's set.**
+      `NEXT_PUBLIC_`), then redeploy Vercel. Without it, anyone can call the
+      edge functions directly with the public anon key. **Since 2026-09-30 the
+      functions refuse every funnel request without it, in test mode too** —
+      set it BEFORE deploying the new functions or email capture and checkout
+      break. (Local `supabase functions serve` only: `ALLOW_UNAUTHENTICATED_FUNNEL=1`.)
 - [ ] **`MAILING_ADDRESS`** secret — a real postal address (a PO box or virtual
       mailbox is fine). CAN-SPAM requires one in every marketing email; in
       live mode the win-back emails refuse to send without it.
-- [ ] Optional secrets: `UNSUBSCRIBE_SECRET` (else SWEEP_SECRET signs
-      unsubscribe links — fine, but rotating SWEEP_SECRET would break old
-      links), `ALERT_EMAIL` (else alerts go to SUPPORT_EMAIL).
+- [ ] **`UNSUBSCRIBE_SECRET`** — **required since 2026-10-05** (`openssl rand -hex 32`).
+      It signs unsubscribe and resume links; the old fallback to
+      SWEEP_SECRET is gone (review P3-1). Without it the sweep sends no
+      win-back emails (cancel retries still run) and resume/unsubscribe links
+      answer 503. Never rotate it casually: rotation breaks every link already
+      emailed.
+- [ ] Optional secret: `ALERT_EMAIL` (else alerts go to SUPPORT_EMAIL).
 - [ ] **Vercel Firewall → rate-limit rule** on `/api/capture-email` and
       `/api/create-checkout` (e.g. 10 requests / minute / IP). This is what
       stops a script from creating thousands of accounts and making us email
@@ -234,10 +249,14 @@ Code for all of this is in the repo; these are the parts only you can do.
       *Upcoming Renewal Reminder* (the refund policy promises a renewal
       reminder) and the refund/subscription lifecycle emails.
 - [ ] **Dodo → Webhooks:** turn on failure email alerts for the endpoint.
-- [ ] **Customer portal check:** after the first live purchase, open
-      `kinderwell.app/manage`, sign in with the buyer email and confirm the
-      Kinderwell subscription is listed with a Cancel button. If Dodo gives you
-      a business-specific portal URL, set `NEXT_PUBLIC_DODO_PORTAL_URL`.
+- [ ] **Customer portal:** `/manage` defaults to Dodo's Unified Customer
+      Portal (`customer.dodopayments.com`, documented, works). Better: set
+      `NEXT_PUBLIC_DODO_PORTAL_URL` in Vercel to the business-specific login
+      `https://customer.dodopayments.com/login/<business_id>` (test mode:
+      `https://test.customer.dodopayments.com/login/<business_id>`; business
+      id is in the Dodo dashboard). Check it NOW in test mode, not after
+      launch: sign in with a test buyer's email and confirm the subscription
+      shows with a Cancel button (review P1-1).
 - [ ] **Refunds from the Dodo dashboard now auto-cancel the subscription** and
       revoke access (the webhook does it). Partial refunds deliberately do
       neither — you get an alert email and decide.
@@ -248,14 +267,123 @@ Code for all of this is in the repo; these are the parts only you can do.
       real customer who said it (names can be changed, words can't be
       invented). Replace or remove any that aren't — see OPS_RUNBOOK §1b.
 
+## 8.7 Fixes from the 2026-09-30 external review — before the first ad dollar
+
+Code is in `40eaa96`, `66f32c8` and `f556fc8`; every finding's status is
+marked inline in `reviews/PROD_REVIEW.md`. What only you can do, **in this order**:
+
+- [ ] **`FUNNEL_PROXY_SECRET` first** (§8.6) — the new functions fail closed
+      without it, in test mode too.
+- [ ] **Apply migration** `20260930000000_webhook_hardening.sql` (dev now,
+      prod in §9), same way as the others: copy into
+      `~/mamalearn/supabase/migrations/` and push from there. Additive: new
+      columns on `entitlements` / `webhook_events` (with a backfill so existing
+      subscribers don't get a second welcome email), a longer expiry grace
+      for `active` rows, and the `rate_limit_hits` table + `hit_rate_limit()`
+      function the funnel's rate limits use.
+      `cp supabase/migrations/20260930000000_webhook_hardening.sql ~/mamalearn/supabase/migrations/`
+- [ ] **Apply migration** `20261005000000_event_ordering.sql` the same way
+      (added 2026-10-05, review P2-17): one nullable column,
+      `entitlements.last_event_at`. The webhook writes it, so it must exist
+      first.
+      `cp supabase/migrations/20261005000000_event_ordering.sql ~/mamalearn/supabase/migrations/`
+- [ ] **Set `UNSUBSCRIBE_SECRET`** (§8.6) — now required.
+- [ ] **Then deploy all SIX functions** (§2.3 — `resume` is new) with
+      `scripts/deploy-functions.sh`. They read the new columns; deploying
+      before the migrations breaks the webhook.
+- [ ] **Vercel env:** `NEXT_PUBLIC_DODO_BUSINESS_ID` = your Dodo business id
+      (dashboard) so `/manage` opens Dodo's Kinderwell-specific login. Redeploy.
+- [ ] **Vercel firewall rule** (§8.6) is still worth adding on top: the code
+      now limits per IP/email itself (10 captures/min/IP, 40/hour/IP, 5/hour
+      per address; 20 checkouts/min/IP), but the firewall stops traffic before
+      it costs a function call.
+- [ ] **Sweep cron:** optionally move `SWEEP_SECRET` from the URL to an
+      `x-sweep-key` header (`net.http_post(url, headers := …)`) so it stops
+      appearing in logs. The `?key=` form still works.
+- [ ] **Check CI is green** on the commit you deploy (PR → Checks: `site`,
+      `functions`, `backend`, `e2e`). `npm test` runs the fast part locally;
+      the database and integration tests need Docker and run in CI.
+      `scripts/deploy-functions.sh` checks this for you.
+- [ ] **Extra §7 checks** (all in test mode except the refund):
+  - Buy, then tap "Get my plan" again within 30 min → same checkout comes
+    back, no second charge possible.
+  - Watch Dodo → Webhooks → Message attempts for one purchase: whatever order
+    the 4 events land in, exactly ONE welcome email and ONE CAPI Purchase.
+  - Confirm the email field on Dodo's checkout page is locked.
+  - **Price guard:** temporarily set `NEXT_PUBLIC_PRICE_ANNUAL` in a Vercel
+    *preview* to a wrong value → "Get my plan" says pricing is being updated
+    and you get a `[Kinderwell alert] Checkout blocked` email. Revert.
+  - **Resume link:** capture an email, wait for the 1-hour win-back email (or
+    run the sweep), open its button in a DIFFERENT browser → lands on your
+    plan with your answers; "This is me" → /offer works; the purchase shows
+    under the same user.
+  - **Open in Safari:** on /offer inside the Instagram in-app browser, tap
+    "Prefer Apple Pay? Copy a link for Safari", paste in Safari → same offer,
+    Apple Pay visible (with a card in Wallet).
+  - (Live, with the refund test) refund, then buy again with the same email →
+    entitlement goes back to `active` with the NEW subscription id.
+  - From an **Instagram ad preview on an iPhone** with a card in Wallet: run
+    the funnel in the in-app browser AND in Safari. Expect no Apple Pay in the
+    in-app browser (Apple doesn't allow it there) — make sure card entry is
+    painless (review P1-5).
+
+## 8.8 Tests and CI — owner steps (added 2026-10-05)
+
+The test suite is in code (README → Tests); these parts are dashboard or
+judgement steps.
+
+- [ ] **Capture real Dodo payloads** to replace the schema-built fixtures —
+      steps in `supabase/functions/_fixtures/dodo/README.md`. Do it during the
+      §7 test purchase/refund. Until then the webhook tests prove our logic,
+      not our assumptions about Dodo's payloads.
+- [ ] **Turn on branch protection for `main`** (GitHub → Settings → Branches
+      → Add rule → require status checks `site`, `functions`, `backend`,
+      `e2e`). Until then CI reports problems but nothing stops a red merge —
+      and Vercel deploys whatever lands on `main`.
+- [ ] **Merge PR #1** (`test/coverage`) once you've looked it over. That
+      deploys the site to production (safe against the current functions);
+      it does not deploy functions.
+- [ ] Optional — **weekly preview check:** GitHub → Settings → Secrets and
+      variables → Actions: variable `E2E_BASE_URL` (a stable preview URL) and
+      secret `VERCEL_BYPASS_SECRET` (Vercel → Settings → Deployment
+      Protection → Protection Bypass for Automation). Each run creates one
+      test user and one unpaid Dodo test checkout.
+- [ ] Decide review P3-23 (turn away ages 0–1 / 13–17?) — a `todo` test in
+      `lib/quiz/questions.test.ts` waits on it.
+
+### Added 2026-10-05 with the remaining review fixes
+- [ ] **During the §7 test purchase, check the new app profile:** Supabase →
+      Table Editor → `user_profiles` → the buyer's row exists with
+      `user_type` set. Then sign into the app with that email: no
+      questionnaire, straight to the paywall-free home.
+- [ ] **Meta Events Manager → Test events (with `META_TEST_EVENT_CODE`):**
+      Lead, InitiateCheckout and Purchase each arrive from BOTH Browser and
+      Server and are shown as deduplicated.
+- [ ] **Read the updated privacy policy** (`/legal/privacy`, dated
+      2026-10-05): it now discloses IP / browser / Meta cookie ids and the
+      30- and 90-day retention. Make sure you're happy with the wording, and
+      mirror it in the app's legal docs if they cover the website.
+- [ ] **CSP:** after a few weeks of real traffic, search the Vercel logs for
+      `[csp-report]`. If nothing comes from our own pages, change the header
+      `Content-Security-Policy-Report-Only` → `Content-Security-Policy` in
+      `next.config.mjs` (review P3-6).
+- [ ] **Confirm two accepted risks** (reviews/PROD_REVIEW.md): P2-16
+      (capture-email returns the user id — kept for web↔app analytics) and
+      P2-13 (`/welcome` trusts Dodo's `status`; the server Purchase is the
+      authoritative copy).
+- [ ] **P3-21:** look at the webhook secret in Dodo's dashboard. If it starts
+      with `whsec_`, the raw-string fallback in `_shared/signature.ts` can be
+      dropped — tell me and I'll remove it.
+
 ## 9. Production flip (only after §7 passes)
 
 - [x] **Dodo KYC/business verification APPROVED** (owner-reported 2026-09-28).
 - [ ] Dodo live mode: **recreate both products** (product IDs do NOT carry
       over from test), new live API key, new webhook endpoint + secret.
 - [ ] Supabase prod: migration via `scripts/db-push-prod.sh`; enable Email OTP;
-      apply BOTH migrations (`20260918…_web2app`, `20260928…_email_opt_outs`);
-      deploy all five functions against prod; set secrets with `DODO_ENV=live`,
+      apply ALL FOUR migrations (`20260918…_web2app`, `20260928…_email_opt_outs`,
+      `20260930…_webhook_hardening`, `20261005…_event_ordering`) BEFORE deploying the functions;
+      deploy all six functions against prod; set secrets with `DODO_ENV=live`,
       the live key/product IDs/webhook secret, and `SITE_URL=https://kinderwell.app`.
 - [ ] Vercel Production env vars: prod Supabase URL + anon key, and
       `NEXT_PUBLIC_SITE_URL=https://kinderwell.app`.
@@ -278,6 +406,11 @@ UNLOCK the app after the app-side changes ship (spec:
 
 **Do not spend on ads until Phase 0 is live in the App Store.** Until then,
 test-mode purchases only.
+
+**Status 2026-10-04:** all three are built (plus a paywall "Use a different
+account" rescue and Dodo cancellation on account deletion) on the app's
+`feat/web-purchase-unlock` branch, shipping in v1.3.0 — not yet released.
+The owner steps they need are in `OPS_RUNBOOK.md` §1b.1.
 
 ## Three prices must always agree
 

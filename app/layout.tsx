@@ -17,11 +17,18 @@ const serif = Newsreader({
 const sans = Figtree({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-sans' });
 const mono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500'], variable: '--font-mono' });
 
+const TITLE = 'Kinderwell — Calmer hard moments, closer kids';
+const DESCRIPTION =
+  'Short, science-based lessons that teach you exactly what to say and do in the parenting moments that keep going wrong.';
+
 export const metadata: Metadata = {
-  title: 'Kinderwell — Calmer hard moments, closer kids',
-  description:
-    'Short, science-based lessons that teach you exactly what to say and do in the parenting moments that keep going wrong.',
+  metadataBase: new URL(config.siteUrl),
+  title: TITLE,
+  description: DESCRIPTION,
   robots: { index: true, follow: true },
+  // Link previews in Messages/WhatsApp and Meta's crawler.
+  openGraph: { title: TITLE, description: DESCRIPTION, siteName: 'Kinderwell', type: 'website', url: '/' },
+  twitter: { card: 'summary_large_image', title: TITLE, description: DESCRIPTION },
 };
 
 export const viewport: Viewport = {
@@ -39,7 +46,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             — sensitive data we promise not to share, and the kind of signal
             that gets an ad account's events restricted. We send only the
             events we name. The first PageView fires here; client-side route
-            changes fire theirs from AnalyticsBoot. */}
+            changes fire theirs from AnalyticsBoot.
+            Limited Data Use with country/state 0/0: Meta geolocates and
+            applies California's CCPA restrictions where they apply (P2-12).
+            The CAPI Purchase in dodo-webhook sends the same flags. */}
         {config.metaPixelId ? (
           <Script id="meta-pixel" strategy="afterInteractive">
             {`!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
@@ -48,6 +58,7 @@ n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
 t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
 document,'script','https://connect.facebook.net/en_US/fbevents.js');
 fbq('set', 'autoConfig', false, '${config.metaPixelId}');
+fbq('dataProcessingOptions', ['LDU'], 0, 0);
 fbq('init', '${config.metaPixelId}');
 fbq('track', 'PageView');`}
           </Script>

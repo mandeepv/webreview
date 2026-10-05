@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { initAnalytics } from '@/lib/analytics';
-import { pixel, setPixelUserData } from '@/lib/meta';
+import { identify, initAnalytics } from '@/lib/analytics';
+import { pixel, setPixelUserData, whenPixelReady } from '@/lib/meta';
 import { getSession } from '@/lib/session';
 
 export default function AnalyticsBoot() {
@@ -14,12 +14,13 @@ export default function AnalyticsBoot() {
     initAnalytics();
     // A returning visitor (e.g. from a win-back email) already gave us their
     // email — re-attach it so this visit's events keep their match quality.
-    // Deferred: the pixel snippet loads afterInteractive and may not have
-    // defined fbq yet when this effect runs.
+    // The pixel snippet loads afterInteractive, so wait until fbq exists.
     const s = getSession();
+    // Same person across browsers (a resumed win-back link lands here with
+    // a session built elsewhere): tie this browser to their user id.
+    if (s.userId && s.userId !== 'dev-preview-user') identify(s.userId);
     if (s.email && s.userId && s.userId !== 'dev-preview-user') {
-      const t = setTimeout(() => void setPixelUserData(s.email!, s.userId!), 1500);
-      return () => clearTimeout(t);
+      return whenPixelReady(() => void setPixelUserData(s.email!, s.userId!));
     }
   }, []);
 

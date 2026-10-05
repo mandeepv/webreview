@@ -15,9 +15,51 @@ export function initAnalytics(): void {
   posthog.init(config.posthogKey, {
     api_host: config.posthogHost,
     capture_pageview: false, // we fire screen-level funnel events instead
+    capture_pageleave: false,
+    // Autocapture records button text as $el_text — here that is the quiz
+    // answers (a parent's stress, their child's behaviour) and, on /welcome,
+    // the buyer's email. The typed registry below is the only capture path.
+    autocapture: false,
+    // The PostHog project is shared with the app; if replay is on there it
+    // must not record the funnel.
+    disable_session_recording: true,
     persistence: 'localStorage+cookie',
+    before_send: scrubUrls,
   });
   initialized = true;
+}
+
+const URL_PROPS = ['$current_url', '$referrer', '$initial_current_url', '$initial_referrer'];
+
+/** Drops email-bearing query params (Dodo appends ?email= to return_url) from every URL property. */
+function scrubUrls<T extends { properties?: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> } | null>(
+  event: T
+): T {
+  if (!event) return event;
+  for (const bag of [event.properties, event.$set, event.$set_once]) {
+    if (!bag) continue;
+    for (const key of URL_PROPS) {
+      const value = bag[key];
+      if (typeof value === 'string') bag[key] = stripEmailParams(value);
+    }
+  }
+  return event;
+}
+
+export function stripEmailParams(url: string): string {
+  try {
+    const u = new URL(url);
+    let changed = false;
+    for (const key of [...u.searchParams.keys()]) {
+      if (key.toLowerCase().includes('email') || /@/.test(u.searchParams.get(key) ?? '')) {
+        u.searchParams.delete(key);
+        changed = true;
+      }
+    }
+    return changed ? u.toString() : url;
+  } catch {
+    return url;
+  }
 }
 
 type FunnelEvent =
@@ -35,6 +77,7 @@ type FunnelEvent =
   | { name: 'web_funnel_checkout_opened'; props: { plan: 'annual' | 'monthly' } }
   | { name: 'web_funnel_checkout_overlay_opened'; props?: undefined }
   | { name: 'web_funnel_checkout_abandoned'; props?: undefined }
+  | { name: 'web_funnel_open_in_safari_clicked'; props?: undefined }
   | { name: 'web_funnel_welcome_viewed'; props: { payment: 'confirmed' | 'processing' | 'failed' | 'unknown' } }
   | { name: 'web_funnel_error'; props: { where: string } };
 

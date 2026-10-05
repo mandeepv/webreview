@@ -10,7 +10,7 @@ import {
   RichHeadline,
   Shell,
 } from '@/components/ui';
-import { JOURNEY_LENGTH, QUIZ_STEPS, QuizOption } from '@/lib/quiz/questions';
+import { JOURNEY_LENGTH, journeyPositionForStep, QUIZ_STEPS, QuizOption } from '@/lib/quiz/questions';
 import { recapChips } from '@/lib/quiz/scoring';
 import { getSession, setAnswer } from '@/lib/session';
 import { track } from '@/lib/analytics';
@@ -31,11 +31,36 @@ function withName(text: string, name: string | null): string {
     .replace(/\{name\}/g, 'friend');
 }
 
+const ARRIVED_KEY = 'kw_quiz_arrived_from_previous';
+
+/** Steps this tab reached by Continue from the step before — their previous history entry is that step. */
+function arrivedSteps(): number[] {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(ARRIVED_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function markArrivedFromPrevious(step: number) {
+  try {
+    sessionStorage.setItem(ARRIVED_KEY, JSON.stringify([...new Set([...arrivedSteps(), step])]));
+  } catch {
+    /* storage blocked: back falls back to a push */
+  }
+}
+
+function arrivedFromPrevious(step: number): boolean {
+  return arrivedSteps().includes(step);
+}
+
 export default function QuizStep({ stepNumber }: { stepNumber: number }) {
   const router = useRouter();
   const idx = stepNumber - 1;
   const step = QUIZ_STEPS[idx];
   const [multi, setMulti] = useState<string[]>([]);
+  const [single, setSingle] = useState<string | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [name, setName] = useState<string | null>(null);
   const [chips, setChips] = useState<string[]>([]);
@@ -48,6 +73,8 @@ export default function QuizStep({ stepNumber }: { stepNumber: number }) {
     const s = getSession();
     const prev = s.answers[step.id];
     if (Array.isArray(prev)) setMulti(prev);
+    // Coming back to a single-choice step shows what they picked (P3-3).
+    setSingle(typeof prev === 'string' && step.type === 'single' ? prev : null);
     if (step.type === 'name' && typeof prev === 'string') setNameInput(prev);
     const storedName = s.answers['name'];
     setName(typeof storedName === 'string' && storedName.trim() ? storedName.trim() : null);
@@ -63,16 +90,29 @@ export default function QuizStep({ stepNumber }: { stepNumber: number }) {
   if (!step) return null;
 
   const next = () => {
-    if (step.next === 'email') router.push('/email');
+    // Email already given (they came back from Act 3): don't ask again or
+    // replay the build — straight back to their plan (P2-7c).
+    if (step.next === 'email' && getSession().emailCaptured) router.push('/plan');
+    else if (step.next === 'email') router.push('/email');
     else if (step.next === 'offer') router.push('/offer');
     else if (stepNumber >= QUIZ_STEPS.length) router.push('/email');
-    else router.push(`/quiz/${stepNumber + 1}`);
+    else {
+      markArrivedFromPrevious(stepNumber + 1);
+      router.push(`/quiz/${stepNumber + 1}`);
+    }
   };
 
-  const back = () =>
-    stepNumber > 1 ? router.push(`/quiz/${stepNumber - 1}`) : router.push('/start');
+  // Back is a real history step when we know the previous entry is the
+  // previous question; pushing a new entry on every back tap grew the history
+  // so the browser's own back button walked forward again (P3-25). A step
+  // reached any other way (resume link, refresh) still pushes.
+  const back = () => {
+    if (stepNumber > 1 && arrivedFromPrevious(stepNumber)) router.back();
+    else router.push(stepNumber > 1 ? `/quiz/${stepNumber - 1}` : '/start');
+  };
 
   const pickSingle = (opt: QuizOption) => {
+    setSingle(opt.value);
     setAnswer(step.id, opt.value);
     if (opt.disqualifies) {
       track('web_funnel_quiz_disqualified', { reason: opt.disqualifies });
@@ -102,7 +142,7 @@ export default function QuizStep({ stepNumber }: { stepNumber: number }) {
 
   return (
     <Shell>
-      <ProgressRail fraction={stepNumber / JOURNEY_LENGTH} onBack={back} />
+      <ProgressRail fraction={journeyPositionForStep(stepNumber) / JOURNEY_LENGTH} onBack={back} />
 
       {step.type === 'statement' ? (
         <div className="flex flex-1 flex-col justify-center py-8">
@@ -170,11 +210,7 @@ export default function QuizStep({ stepNumber }: { stepNumber: number }) {
                 key={opt.value}
                 label={opt.label}
                 mode={step.type === 'multi' ? 'multi' : 'single'}
-                selected={
-                  step.type === 'multi'
-                    ? multi.includes(opt.value)
-                    : undefined
-                }
+                selected={step.type === 'multi' ? multi.includes(opt.value) : single === opt.value}
                 onClick={() => (step.type === 'multi' ? toggleMulti(opt) : pickSingle(opt))}
               />
             ))}

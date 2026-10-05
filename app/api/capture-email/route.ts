@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { forwardToFunction, readJson } from '@/lib/proxy';
 
+export const maxDuration = 30; // seconds; the proxy gives up at 20
+
 // Proxy to the capture-email edge function (see lib/proxy.ts for why the
 // proxy exists).
 export async function POST(req: NextRequest) {

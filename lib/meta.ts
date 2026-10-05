@@ -66,3 +66,29 @@ async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+/**
+ * Runs `fn` as soon as the pixel snippet has defined `window.fbq` (it loads
+ * afterInteractive, so it may not exist yet when a component mounts).
+ * Replaces a fixed 1.5 s timer that was both slower than needed and could
+ * fire before a slow snippet loaded (P3-5). Gives up after 10 s. Returns a
+ * cancel function for effect cleanup.
+ */
+export function whenPixelReady(fn: () => void): () => void {
+  if (typeof window === 'undefined' || !config.metaPixelId) return () => {};
+  if (window.fbq) {
+    fn();
+    return () => {};
+  }
+  let waited = 0;
+  const timer = setInterval(() => {
+    waited += 100;
+    if (window.fbq) {
+      clearInterval(timer);
+      fn();
+    } else if (waited >= 10_000) {
+      clearInterval(timer);
+    }
+  }, 100);
+  return () => clearInterval(timer);
+}

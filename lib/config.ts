@@ -16,6 +16,14 @@ function required(name: string, value: string | undefined): string {
   return value;
 }
 
+function portalUrl(): string {
+  if (process.env.NEXT_PUBLIC_DODO_PORTAL_URL) return process.env.NEXT_PUBLIC_DODO_PORTAL_URL;
+  const businessId = process.env.NEXT_PUBLIC_DODO_BUSINESS_ID;
+  if (!businessId) return 'https://customer.dodopayments.com';
+  const host = process.env.NEXT_PUBLIC_DODO_ENV === 'live' ? 'customer.dodopayments.com' : 'test.customer.dodopayments.com';
+  return `https://${host}/login/${encodeURIComponent(businessId)}`;
+}
+
 export const config = {
   siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000',
   // The live listing (OPS_RUNBOOK §1b.6). Public and stable, so it defaults
@@ -33,10 +41,12 @@ export const config = {
   supabaseUrl: required('NEXT_PUBLIC_SUPABASE_URL', process.env.NEXT_PUBLIC_SUPABASE_URL),
   supabaseAnonKey: required('NEXT_PUBLIC_SUPABASE_ANON_KEY', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
 
-  // Where /manage sends subscribers to cancel or update payment: Dodo's
-  // customer portal (email sign-in, lists their Kinderwell subscription).
-  // Override only if Dodo gives us a business-specific portal URL.
-  dodoPortalUrl: process.env.NEXT_PUBLIC_DODO_PORTAL_URL || 'https://customer.dodopayments.com',
+  // Where /manage sends subscribers to cancel or update payment. Preference:
+  // an explicit URL; else Dodo's business-specific login (documented as
+  // customer.dodopayments.com/login/<business_id>, test.customer… in test
+  // mode); else Dodo's Unified Customer Portal, which also works but lists
+  // every Dodo merchant the buyer uses (review P1-1).
+  dodoPortalUrl: portalUrl(),
 
   // Preview-only "skip" buttons on /email and /offer. On in local dev; on a
   // deployed build only while NEXT_PUBLIC_DEV_SKIP=1 AND checkout is in test

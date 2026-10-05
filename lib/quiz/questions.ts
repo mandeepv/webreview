@@ -282,6 +282,16 @@ export const ACT3_START = QUIZ_STEPS.findIndex((s) => s.id === 'how-it-works') +
 /** Full perceived journey for the progress bar: steps + email/building/plan/offer. */
 export const JOURNEY_LENGTH = TOTAL_STEPS + 4;
 
+/**
+ * Position in the journey as the user walks it: steps 1…(ACT3_START-1),
+ * /email, /building, /plan, the Act 3 steps, /offer. Numbering quiz steps by
+ * their own index made the bar jump backwards after the plan reveal (P2-7).
+ */
+export const EMAIL_POSITION = ACT3_START;
+export function journeyPositionForStep(stepNumber: number): number {
+  return stepNumber < ACT3_START ? stepNumber : stepNumber + 3;
+}
+
 export function stepIndexById(id: string): number {
   return QUIZ_STEPS.findIndex((s) => s.id === id);
 }

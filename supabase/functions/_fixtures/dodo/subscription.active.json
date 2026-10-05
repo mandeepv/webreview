@@ -1,0 +1,43 @@
+{
+  "business_id": "bus_TEST00000000000000000",
+  "type": "subscription.active",
+  "timestamp": "2026-10-05T10:00:00.000000Z",
+  "data": {
+    "addons": [],
+    "billing": { "country": "US", "city": "Austin", "state": "TX", "street": "1 Test Street", "zipcode": "78701" },
+    "brand_id": "bus_TEST00000000000000000",
+    "cancel_at_next_billing_date": false,
+    "created_at": "2026-10-05T09:59:40.000000Z",
+    "credit_entitlement_cart": [],
+    "currency": "USD",
+    "customer": { "customer_id": "cus_TEST00000000000000000", "email": "buyer@example.com", "name": "Test Buyer" },
+    "has_payment_method": true,
+    "metadata": {
+      "supabase_user_id": "00000000-0000-4000-8000-000000000001",
+      "funnel_session_id": "00000000-0000-4000-8000-0000000000aa",
+      "event_id": "evt_TEST000000000000",
+      "plan": "annual"
+    },
+    "meter_credit_entitlement_cart": [],
+    "meters": [],
+    "next_billing_date": "2027-10-05T09:59:40.000000Z",
+    "on_demand": false,
+    "payment_frequency_count": 1,
+    "payment_frequency_interval": "Year",
+    "previous_billing_date": "2026-10-05T09:59:40.000000Z",
+    "product_id": "pdt_TEST_ANNUAL",
+    "quantity": 1,
+    "recurring_pre_tax_amount": 5999,
+    "status": "active",
+    "subscription_id": "sub_TEST00000000000000000",
+    "subscription_period_count": 10,
+    "subscription_period_interval": "Year",
+    "tax_inclusive": false,
+    "trial_period_days": 0,
+    "cancelled_at": null,
+    "discount_id": null,
+    "expires_at": null,
+    "past_due_ends_at": null,
+    "payment_method_id": "pm_TEST00000000000000000"
+  }
+}

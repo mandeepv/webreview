@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
 import { forwardToFunction } from '@/lib/proxy';
 
+export const maxDuration = 30; // seconds; the proxy gives up at 20
+
 // Two callers, one endpoint:
 //   * the /unsubscribe page (link in the email body) — u/t in the query
 //   * Gmail/Yahoo one-click (RFC 8058) — a POST to the List-Unsubscribe URL,

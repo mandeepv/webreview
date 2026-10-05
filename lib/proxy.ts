@@ -1,3 +1,4 @@
+import 'server-only'; // FUNNEL_PROXY_SECRET must never be pulled into a client bundle
 import { NextRequest, NextResponse } from 'next/server';
 import { config } from './config';
 
@@ -10,27 +11,50 @@ import { config } from './config';
 // FUNNEL_PROXY_SECRET is a plain server env var in Vercel — never
 // NEXT_PUBLIC_, or it ships to every browser and protects nothing.
 
-export async function forwardToFunction(
+const FUNCTION_TIMEOUT_MS = 20_000;
+
+type FunctionName = 'capture-email' | 'create-checkout' | 'unsubscribe' | 'resume';
+
+/** Calls an edge function through the proxy path; returns its status and parsed body. */
+export async function callFunction(
   req: NextRequest,
-  fn: 'capture-email' | 'create-checkout' | 'unsubscribe',
+  fn: FunctionName,
   body: object
-): Promise<NextResponse> {
+): Promise<{ status: number; json: Record<string, unknown> }> {
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '';
   const ua = req.headers.get('user-agent') ?? '';
 
-  const res = await fetch(`${config.supabaseUrl}/functions/v1/${fn}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.supabaseAnonKey}`,
-      apikey: config.supabaseAnonKey,
-      'x-funnel-proxy-key': process.env.FUNNEL_PROXY_SECRET ?? '',
-    },
-    body: JSON.stringify({ ...body, client_ip: ip, client_ua: ua }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${config.supabaseUrl}/functions/v1/${fn}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.supabaseAnonKey}`,
+        apikey: config.supabaseAnonKey,
+        'x-funnel-proxy-key': process.env.FUNNEL_PROXY_SECRET ?? '',
+      },
+      body: JSON.stringify({ ...body, client_ip: ip, client_ua: ua }),
+      // Under the routes' maxDuration, so a slow Dodo call becomes a clean
+      // 504 the page can explain rather than Vercel killing the function.
+      signal: AbortSignal.timeout(FUNCTION_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const timedOut = err instanceof Error && err.name === 'TimeoutError';
+    return { status: 504, json: { error: timedOut ? 'timeout' : 'upstream_unreachable' } };
+  }
 
-  const json = await res.json().catch(() => ({}));
-  return NextResponse.json(json, { status: res.status });
+  const json = ((await res.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+  return { status: res.status, json };
+}
+
+export async function forwardToFunction(
+  req: NextRequest,
+  fn: FunctionName,
+  body: object
+): Promise<NextResponse> {
+  const { status, json } = await callFunction(req, fn, body);
+  return NextResponse.json(json, { status });
 }
 
 export async function readJson(req: NextRequest): Promise<object | null> {

@@ -9,7 +9,7 @@ export default function Privacy() {
     <Shell>
       <article className="flex-1 py-8 text-[15px] leading-[1.65] text-ink/75">
         <h1 className="font-serif text-[28px] text-ink">Privacy Policy</h1>
-        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: September 28, 2026</p>
+        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: October 5, 2026</p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">What we collect on this site</h2>
         <p className="mt-2 leading-relaxed">
@@ -30,8 +30,18 @@ export default function Privacy() {
         <p className="mt-2 leading-relaxed">
           We use PostHog for product analytics. We use the Meta Pixel and Meta Conversions API to
           measure advertising, which includes sharing event data and a hashed (irreversibly
-          encoded) version of your email address with Meta to match conversions to ads. We do not
-          share your quiz answers with advertisers as personal information.
+          encoded) version of your email address with Meta to match conversions to ads. For that
+          matching we also record your IP address, browser type and Meta cookie identifiers when
+          you give your email and when you open checkout. We do not share your quiz answers with
+          advertisers as personal information.
+        </p>
+
+        <h2 className="mt-6 font-serif text-[19px] text-ink">How long we keep it</h2>
+        <p className="mt-2 leading-relaxed">
+          The IP address, browser type and Meta cookie identifiers are deleted 30 days after you
+          start the quiz. Quiz answers that are not linked to an account (you never gave an email,
+          or you deleted your account) are deleted after 90 days. Your account data is kept while
+          you have an account.
         </p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">Your choices</h2>

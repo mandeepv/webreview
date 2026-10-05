@@ -7,7 +7,7 @@ export default function Terms() {
     <Shell>
       <article className="flex-1 py-8 text-[15px] leading-[1.65] text-ink/75">
         <h1 className="font-serif text-[28px] text-ink">Terms of Service</h1>
-        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: September 19, 2026</p>
+        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: September 30, 2026</p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">The service</h2>
         <p className="mt-2 leading-relaxed">
@@ -20,9 +20,12 @@ export default function Terms() {
         <p className="mt-2 leading-relaxed">
           Subscriptions bought here are sold by Dodo Payments as merchant of record and renew
           automatically (annually or monthly, as chosen at checkout) until canceled. You can
-          cancel anytime from your account page — the link is in every receipt and renewal
-          email — and cancellation stops the next renewal while keeping access through the paid
-          period. Renewal pricing is disclosed at checkout.
+          cancel anytime at{' '}
+          <a className="text-forest underline" href="/manage">
+            kinderwell.app/manage
+          </a>{' '}
+          (sign in with the email you bought with) — and cancellation stops the next renewal while
+          keeping access through the paid period. Renewal pricing is disclosed at checkout.
         </p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">Refunds</h2>

@@ -1,0 +1,28 @@
+{
+  "brand_id": "bus_TEST00000000000000000",
+  "business_id": "bus_TEST00000000000000000",
+  "created_at": "2026-09-19T08:00:00.000000Z",
+  "credit_entitlements": [],
+  "entitlements": [],
+  "is_recurring": true,
+  "license_key_enabled": false,
+  "metadata": {},
+  "price": {
+    "currency": "USD",
+    "payment_frequency_count": 1,
+    "payment_frequency_interval": "Year",
+    "price": 5999,
+    "subscription_period_count": 10,
+    "subscription_period_interval": "Year",
+    "type": "recurring_price",
+    "discount": 0,
+    "discount_bps": 0,
+    "purchasing_power_parity": false,
+    "tax_inclusive": false
+  },
+  "product_id": "pdt_TEST_ANNUAL",
+  "tax_category": "saas",
+  "updated_at": "2026-09-19T08:00:00.000000Z",
+  "name": "Kinderwell Annual",
+  "description": null
+}

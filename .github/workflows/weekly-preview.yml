@@ -1,0 +1,39 @@
+# Weekly: the funnel (Playwright B1) against a deployed Vercel preview and its
+# REAL test-mode backend — dev Supabase + Dodo test mode — stopping once
+# Dodo's checkout opens. Catches what the stubbed CI run can't: env vars,
+# deployed edge functions, the proxy secret, Dodo itself. Never pays.
+#
+# Inert until configured (GitHub → Settings → Secrets and variables → Actions):
+#   variable E2E_BASE_URL          a stable preview URL, e.g. the test/coverage branch alias
+#   secret   VERCEL_BYPASS_SECRET  Vercel → Settings → Deployment Protection → Protection Bypass for Automation
+# Each run creates one test user in dev Supabase and one unpaid Dodo test checkout.
+name: Weekly preview check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  funnel:
+    if: vars.E2E_BASE_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      VERCEL_BYPASS_SECRET: ${{ secrets.VERCEL_BYPASS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps webkit
+      - run: npx playwright test e2e/funnel.spec.ts -g "B1:"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

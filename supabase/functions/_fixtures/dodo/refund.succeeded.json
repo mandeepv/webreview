@@ -1,0 +1,19 @@
+{
+  "business_id": "bus_TEST00000000000000000",
+  "type": "refund.succeeded",
+  "timestamp": "2026-10-06T10:00:00.000000Z",
+  "data": {
+    "brand_id": "bus_TEST00000000000000000",
+    "business_id": "bus_TEST00000000000000000",
+    "created_at": "2026-10-06T09:59:58.000000Z",
+    "customer": { "customer_id": "cus_TEST00000000000000000", "email": "buyer@example.com", "name": "Test Buyer" },
+    "is_partial": false,
+    "metadata": {},
+    "payment_id": "pay_TEST00000000000000000",
+    "refund_id": "ref_TEST00000000000000000",
+    "status": "succeeded",
+    "amount": 5999,
+    "currency": "USD",
+    "reason": "Requested by customer"
+  }
+}

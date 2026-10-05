@@ -11,6 +11,7 @@ import { calculatingStages } from '@/lib/quiz/scoring';
 import { getSession } from '@/lib/session';
 
 const DURATION_MS = 9000;
+const BUILT_KEY = 'kw_plan_built';
 
 export default function BuildingPage() {
   const router = useRouter();
@@ -18,6 +19,15 @@ export default function BuildingPage() {
   const [stages, setStages] = useState<{ at: number; label: string }[]>([]);
 
   useEffect(() => {
+    // Seen it once this visit: the build is theatre, not a gate (P2-7b).
+    try {
+      if (sessionStorage.getItem(BUILT_KEY)) {
+        router.replace('/plan');
+        return;
+      }
+    } catch {
+      /* storage blocked — just play it */
+    }
     setStages(calculatingStages(getSession().answers));
     const started = Date.now();
     const t = setInterval(() => {
@@ -25,7 +35,12 @@ export default function BuildingPage() {
       setPct(p);
       if (p >= 100) {
         clearInterval(t);
-        setTimeout(() => router.push('/plan'), 500);
+        try {
+          sessionStorage.setItem(BUILT_KEY, '1');
+        } catch {
+          /* same */
+        }
+        setTimeout(() => router.replace('/plan'), 500);
       }
     }, 90);
     return () => clearInterval(t);

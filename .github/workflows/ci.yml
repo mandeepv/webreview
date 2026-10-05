@@ -1,0 +1,110 @@
+# Every push and PR: the site must typecheck, lint and build, and the edge
+# functions must typecheck and pass their tests. The webhook decides who has
+# paid — it doesn't ship untested (reviews/PROD_REVIEW.md P1-12).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    env:
+      # Build-time public config. Placeholders: CI only proves it builds.
+      NEXT_PUBLIC_SITE_URL: https://kinderwell.app
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+      NEXT_PUBLIC_PRICE_ANNUAL: '59.99'
+      NEXT_PUBLIC_PRICE_MONTHLY: '12.99'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:web -- --coverage # reported, not enforced
+      - run: npm run build
+
+  functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: cd supabase/functions && deno check --node-modules-dir=none */index.ts _testing/*.ts _integration/*.ts
+      - run: deno test --allow-env --node-modules-dir=none --ignore=supabase/functions/_integration supabase/functions/
+
+  # Local Supabase (Docker is built into the runner): database tests, then the
+  # edge functions called end to end against a real database with Dodo,
+  # Resend, Meta and PostHog faked at the HTTP boundary. Spec: work items 3–5.
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Start local Supabase (applies supabase/migrations)
+        id: supabase
+        run: supabase start
+      # The test steps below run whenever Supabase started, even if an earlier
+      # one failed — so one red step never hides another's failures.
+      - name: Database tests (RLS, grants, SQL functions)
+        if: ${{ !cancelled() && steps.supabase.outcome == 'success' }}
+        run: supabase test db
+      - name: Edge-function integration tests
+        if: ${{ !cancelled() && steps.supabase.outcome == 'success' }}
+        run: |
+          supabase status -o env > "$RUNNER_TEMP/supabase.env"
+          set -a; . "$RUNNER_TEMP/supabase.env"; set +a
+          export SUPABASE_URL="$API_URL" SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY:-$SECRET_KEY}"
+          INTEGRATION_TESTS=1 deno test --allow-all --node-modules-dir=none --coverage=cov supabase/functions/_integration/
+      - name: Coverage gate (webhook and checkout handlers ≥ 80% of lines)
+        if: ${{ !cancelled() && steps.supabase.outcome == 'success' }}
+        run: |
+          deno coverage cov --lcov --output=coverage.lcov --include='supabase/functions/(dodo-webhook|create-checkout|capture-email|winback-sweep|resume|unsubscribe)/handler\.ts|supabase/functions/_shared/'
+          deno run --allow-read supabase/functions/_testing/check_coverage.ts coverage.lcov
+
+  # A production build in iPhone-sized WebKit: the HTTP checks (redirects,
+  # server-rendered ad copy, headers) and the funnel end to end, with the
+  # backend and third parties stubbed in the browser. Spec: work item 6.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_SITE_URL: https://kinderwell.app
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+      NEXT_PUBLIC_PRICE_ANNUAL: '59.99'
+      NEXT_PUBLIC_PRICE_MONTHLY: '12.99'
+      NEXT_PUBLIC_DODO_ENV: test
+      # A fake id so the pixel snippet is built in; the tests replace Meta's script.
+      NEXT_PUBLIC_META_PIXEL_ID: '000000000000000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps webkit
+      # next/font fetches Google Fonts at build time and occasionally hits a
+      # network blip ("An error occurred in next/font"); one retry.
+      - run: npm run build || (sleep 10 && npm run build)
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

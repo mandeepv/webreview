@@ -4,6 +4,8 @@
 // It is written to the server exactly once — at email capture — because
 // before that moment there is no user to attach it to and nothing to recover.
 
+import { RESUME_COOKIE } from './resume-cookie';
+
 export type Answers = Record<string, string | string[] | number>;
 
 export interface FunnelSession {
@@ -21,6 +23,11 @@ export interface FunnelSession {
 
 const KEY = 'kw_funnel_session';
 
+// Fallback when localStorage is unavailable (some in-app browsers, blocked
+// site data): every read in this page load returns the same session, so
+// /email and /offer don't post two different ids (P2-8).
+let memory: FunnelSession | null = null;
+
 function newSession(): FunnelSession {
   return {
     id: crypto.randomUUID(),
@@ -36,19 +43,65 @@ function newSession(): FunnelSession {
 
 export function getSession(): FunnelSession {
   if (typeof window === 'undefined') return newSession();
+  const resumed = consumeResumeCookie();
+  if (resumed) {
+    save(resumed);
+    return resumed;
+  }
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw) as FunnelSession;
+    if (raw) return (memory = JSON.parse(raw) as FunnelSession);
   } catch {
-    // Corrupt storage → start fresh; losing quiz answers beats a crashed funnel.
+    // Corrupt or blocked storage → fall through; losing quiz answers beats a crashed funnel.
   }
+  if (memory) return memory;
   const s = newSession();
   save(s);
   return s;
 }
 
+/**
+ * A session handed over by /r/<token> (win-back email, "open in Safari").
+ * It REPLACES whatever this browser had: the link names one specific funnel
+ * session, and the purchase must attach to that session's user (P1-6).
+ */
+function consumeResumeCookie(): FunnelSession | null {
+  try {
+    const raw = document.cookie
+      .split('; ')
+      .find((c) => c.startsWith(RESUME_COOKIE + '='))
+      ?.slice(RESUME_COOKIE.length + 1);
+    if (!raw) return null;
+    document.cookie = `${RESUME_COOKIE}=; Max-Age=0; path=/`;
+    const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const p = JSON.parse(new TextDecoder().decode(bytes)) as {
+      sessionId: string;
+      userId: string;
+      email: string;
+      answers?: Answers;
+      utm?: Record<string, string>;
+      landingVariant?: string;
+    };
+    if (!p.sessionId || !p.userId || !p.email) return null;
+    return {
+      id: p.sessionId,
+      answers: p.answers ?? {},
+      utm: p.utm ?? {},
+      landingVariant: p.landingVariant ?? 'default',
+      emailCaptured: true,
+      userId: p.userId,
+      email: p.email,
+      startedAt: Date.now(),
+    };
+  } catch {
+    return null; // a broken hand-off just means the local session is used
+  }
+}
+
 export function save(s: FunnelSession): void {
   if (typeof window === 'undefined') return;
+  memory = s;
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
@@ -81,6 +134,10 @@ export function captureAttribution(searchParams: URLSearchParams): void {
   if (Object.keys(utm).length === 0) return;
   const s = getSession();
   if (utm.fbclid && utm.fbclid !== s.utm.fbclid) s.fbclidAt = Date.now();
+  // A later visit tagged only with ?a= or utm_* must not erase the stored
+  // fbclid — once Safari expires the _fbc cookie it's the only way to
+  // rebuild it (P3-22).
+  if (!utm.fbclid && s.utm.fbclid) utm.fbclid = s.utm.fbclid;
   s.utm = utm;
   if (utm.a) s.landingVariant = utm.a;
   save(s);
@@ -93,6 +150,7 @@ export function captureAttribution(searchParams: URLSearchParams): void {
  */
 export function resetSession(): void {
   if (typeof window === 'undefined') return;
+  memory = null;
   try {
     localStorage.removeItem(KEY);
   } catch {

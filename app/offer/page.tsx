@@ -13,8 +13,9 @@ import { config, perDayAnnual, perDayMonthly } from '@/lib/config';
 import { offerEcho } from '@/lib/quiz/scoring';
 import { getSession, readMetaCookies, save } from '@/lib/session';
 import { track } from '@/lib/analytics';
-import { openOverlayCheckout } from '@/lib/checkout';
+import { closeOverlayCheckout, openOverlayCheckout, preloadCheckout } from '@/lib/checkout';
 import { pixel } from '@/lib/meta';
+import { PayMethodsLine } from './in-app-note';
 
 // Paywall structure per the web2app research (botsi/funnelfox teardowns of
 // Lasta, Fastic, Babbel, Noom):
@@ -128,6 +129,19 @@ export default function OfferPage() {
     setEcho(offerEcho(s.answers));
     track('web_funnel_offer_viewed');
     pixel('AddToCart');
+    preloadCheckout();
+
+    // iOS Safari restores this page from the back-forward cache when the
+    // buyer comes back from Dodo's hosted page or /welcome — with React
+    // state intact, i.e. a disabled "Opening…" button and possibly the
+    // overlay still covering the page (P1-10b).
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      closeOverlayCheckout();
+      setBusy(false);
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -137,15 +151,31 @@ export default function OfferPage() {
     const s = getSession();
     try {
       track('web_funnel_checkout_opened', { plan });
-      pixel('InitiateCheckout', {
-        value: plan === 'monthly' ? config.priceMonthly : config.priceAnnual,
-        currency: 'USD',
-      });
       const res = await fetch('/api/create-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: s.id, plan, meta: readMetaCookies() }),
+        body: JSON.stringify({
+          sessionId: s.id,
+          plan,
+          // Checked against the Dodo product so we never charge a price the
+          // page didn't show (create-checkout refuses on a mismatch).
+          displayedPrice: plan === 'monthly' ? config.priceMonthly : config.priceAnnual,
+          meta: readMetaCookies(),
+        }),
+        // A hung request must never leave the button stuck on "Opening…".
+        signal: AbortSignal.timeout(25_000),
       });
+      if (res.status === 429) {
+        setError('Too many attempts. Please wait a minute and try again.');
+        setBusy(false);
+        return;
+      }
+      const errorBody = res.status === 409 ? ((await res.clone().json().catch(() => ({}))) as { error?: string }) : {};
+      if (errorBody.error === 'price_mismatch') {
+        setError('Our pricing is being updated. Please try again in a few minutes.');
+        setBusy(false);
+        return;
+      }
       if (res.status === 409) {
         // create-checkout's duplicate guard: this email already has an active
         // web subscription. Charging again is the worst possible outcome.
@@ -164,11 +194,25 @@ export default function OfferPage() {
       // event_id the webhook uses for CAPI — Meta dedups the pair.
       localStorage.setItem('kw_purchase_event_id', eventId);
       localStorage.setItem('kw_purchase_plan', plan);
+      // Only once a checkout really exists — not on a 409 or a 5xx.
+      // Same event id as create-checkout's server-side twin → Meta keeps one (P2-2).
+      pixel(
+        'InitiateCheckout',
+        { value: plan === 'monthly' ? config.priceMonthly : config.priceAnnual, currency: 'USD' },
+        `ic-${eventId}`
+      );
 
       // Overlay keeps the buyer on kinderwell.app; the hosted page is the
       // fallback so a blocked/failed SDK never leaves them on a dead button.
-      const opened = await openOverlayCheckout(checkoutUrl, () => setBusy(false));
-      if (!opened) window.location.href = checkoutUrl;
+      const opened = await openOverlayCheckout(checkoutUrl, (reason) => {
+        setBusy(false);
+        if (reason === 'expired') setError('That checkout expired. Tap the button again for a fresh one.');
+        if (reason === 'error') setError('Checkout hit a problem. Please try again.');
+      });
+      if (!opened) {
+        window.location.href = checkoutUrl;
+        setBusy(false);
+      }
     } catch {
       track('web_funnel_error', { where: 'create_checkout' });
       setError('Couldn’t open checkout. Please try again.');
@@ -241,9 +285,7 @@ export default function OfferPage() {
           <PrimaryButton onClick={checkout} disabled={busy}>
             {busy ? 'Opening secure checkout…' : 'Get my plan'}
           </PrimaryButton>
-          <p className="mt-2.5 text-center text-[13px] text-ink/55">
-             Pay with Apple Pay, Google Pay, or card
-          </p>
+          <PayMethodsLine />
           {/* FTC auto-renewal disclosure — keep adjacent to the CTA. */}
           <p className="mt-2 text-center text-[12px] leading-relaxed text-ink/50">
             {plan === 'annual'
