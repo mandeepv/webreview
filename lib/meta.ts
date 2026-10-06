@@ -62,6 +62,16 @@ export async function setPixelUserData(email: string, userId: string): Promise<v
   }
 }
 
+/**
+ * The Lead's event id — the same value capture-email sends Meta server-side
+ * (supabase/functions/_shared/meta.ts), so the pair dedups. A hash of the
+ * session id, never the id itself: the session id is half of what mints an
+ * app sign-in link (SPEC-21), so it stays out of Meta's logs.
+ */
+export async function leadEventId(sessionId: string): Promise<string> {
+  return `lead-${await sha256Hex(sessionId)}`;
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');

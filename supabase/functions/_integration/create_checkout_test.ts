@@ -1,4 +1,4 @@
-// create-checkout integration tests (spec work item 4, C0–C8).
+// create-checkout integration tests (spec work item 4, C0–C9; SPEC-21 C10).
 
 import { INTEGRATION, itest, TEST } from '../_testing/env.ts';
 import { assert, assertEquals, assertNotEquals } from 'jsr:@std/assert@1';
@@ -6,6 +6,7 @@ import { FakeHttp, HOSTS, json } from '../_testing/fake_http.ts';
 import { createUser, days, db, isoIn, putEntitlement, putFunnelSession } from '../_testing/db.ts';
 import { productResponse } from '../_testing/fixtures.ts';
 import { awayFromWindowEdge, call, randomIp } from '../_testing/proxy.ts';
+import { newHandoffKey, sha256Hex } from '../_shared/handoff.ts';
 
 type Handler = (req: Request) => Promise<Response>;
 const fake = new FakeHttp();
@@ -213,4 +214,54 @@ itest('C9: a new checkout sends Meta a server-side InitiateCheckout once; a reus
   assertEquals(event.event_id, `ic-${first.json.eventId}`); // what /offer passes to pixel('InitiateCheckout')
   assertEquals(event.custom_data, { value: 59.99, currency: 'USD' });
   assertEquals(event.user_data.fbp, 'fb.1.1.111');
+});
+
+// ── C10: the handoff nonce (SPEC-21) ───────────────────────────────────────
+
+const nonceHashOf = async (sessionId: string) =>
+  (await db().from('funnel_sessions').select('handoff_nonce_hash').eq('id', sessionId).single()).data!.handoff_nonce_hash;
+
+itest('C10: checkout stores only the sha256 of the browser’s handoff nonce, on a new and on a reused checkout', async () => {
+  const handler = setup();
+  const { sessionId } = await capturedSession();
+  const first = newHandoffKey();
+  assertEquals((await call(handler, 'create-checkout', body(sessionId, { handoffNonce: first }))).status, 200);
+  assertEquals(await nonceHashOf(sessionId), await sha256Hex(first));
+
+  // Another browser resuming the same session opens checkout again: it is
+  // the one about to pay, so its nonce replaces the first.
+  const second = newHandoffKey();
+  assertEquals((await call(handler, 'create-checkout', body(sessionId, { handoffNonce: second }))).status, 200);
+  assertEquals(await nonceHashOf(sessionId), await sha256Hex(second));
+  assertEquals(checkoutCalls().length, 1); // that was the reused checkout
+
+  const { data } = await db().from('funnel_sessions').select('*').eq('id', sessionId).single();
+  assert(!JSON.stringify(data).includes(second), 'the nonce itself was stored');
+  assert(!JSON.stringify(checkoutCalls()[0].body).includes(first), 'the nonce went to Dodo');
+});
+
+itest('C10b: no nonce, or a malformed one, leaves the stored hash alone and checkout still works', async () => {
+  const handler = setup();
+  const { sessionId } = await capturedSession();
+  assertEquals((await call(handler, 'create-checkout', body(sessionId))).status, 200);
+  assertEquals(await nonceHashOf(sessionId), null);
+
+  const nonce = newHandoffKey();
+  await call(handler, 'create-checkout', body(sessionId, { handoffNonce: nonce }));
+  for (const bad of ['short', 42, `${nonce.slice(1)}=`]) {
+    assertEquals((await call(handler, 'create-checkout', body(sessionId, { handoffNonce: bad }))).status, 200);
+  }
+  assertEquals(await nonceHashOf(sessionId), await sha256Hex(nonce));
+});
+
+itest('C10c: once the purchase has landed, nobody can swap in a nonce of their own', async () => {
+  const handler = setup();
+  const { user, sessionId } = await capturedSession();
+  const buyers = newHandoffKey();
+  await call(handler, 'create-checkout', body(sessionId, { handoffNonce: buyers }));
+  await putEntitlement({ user_id: user.id, status: 'active', current_period_end: isoIn(days(365)) });
+
+  const res = await call(handler, 'create-checkout', body(sessionId, { handoffNonce: newHandoffKey() }));
+  assertEquals(res.json.error, 'already_subscribed');
+  assertEquals(await nonceHashOf(sessionId), await sha256Hex(buyers));
 });

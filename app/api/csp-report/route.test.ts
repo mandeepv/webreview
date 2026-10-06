@@ -32,6 +32,17 @@ describe('/api/csp-report', () => {
     expect(warn.mock.calls[0].join(' ')).toContain('frame-src');
   });
 
+  it('never writes a sign-in key to the logs, from the page or the blocked address (SPEC-21)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const key = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE';
+    await post(JSON.stringify({ 'csp-report': { 'document-uri': `https://open.kinderwell.app/k/${key}`, 'effective-directive': 'script-src', 'blocked-uri': `kinderwell://k/${key}` } }));
+    await post(JSON.stringify([{ type: 'csp-violation', body: { effectiveDirective: 'img-src', blockedURL: 'https://x.example/a.png', documentURL: `https://open.kinderwell.app/k/${key}?x=1` } }]));
+    const lines = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(lines).not.toContain(key);
+    expect(lines).toContain('https://open.kinderwell.app/k/[redacted]');
+    expect(lines).toContain('kinderwell://k/[redacted]');
+  });
+
   it('never errors on junk', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect((await post('not json')).status).toBe(204);

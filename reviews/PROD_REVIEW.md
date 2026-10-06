@@ -251,6 +251,8 @@ Recommended order of work: P0-1 → P0-2 → P0-3 → P1-1 → P1-2 → P1-3/3b/
 > **Status (2026-09-30):** 🟡 **Partly done** — InitiateCheckout now fires only after a successful create-checkout. ⬜ **Pending**: server-side CAPI Lead / InitiateCheckout.
 >
 > **Update (2026-10-05, branch `test/coverage`):** ✅ **Done** (`075cdad`) — capture-email sends a CAPI Lead (`lead-<sessionId>`) and create-checkout a CAPI InitiateCheckout per new checkout (`ic-<eventId>`); the browser pixel uses the same ids, so Meta dedups each pair. fbp/fbc now captured at /email. Tests E8, E8b, C9.
+>
+> **Update (2026-10-06, branch `feat/spec-21-handoff`):** Since 2026-10-06 the Lead id is `lead-<sha256(sessionId)>`, so the session id never reaches Meta (SPEC-21).
 
 - **Where:** `app/email/page.tsx:63–64`, `app/offer/page.tsx:140–143`, `create-checkout/index.ts:119–128`.
 - **Why:** Meta's own guidance is to send every funnel event through CAPI with `event_id` dedup, not only Purchase. Lead is the event you will optimise on in the first weeks while Purchase volume is thin, and it is currently the least reliable one.

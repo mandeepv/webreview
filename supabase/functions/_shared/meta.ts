@@ -88,6 +88,18 @@ export async function afterResponse(work: Promise<unknown>): Promise<void> {
   else await safe;
 }
 
+/**
+ * The Lead's event id, shared by the browser pixel (lib/meta.ts) and
+ * capture-email's server twin so Meta dedups the pair. A HASH of the funnel
+ * session id, never the id itself: the session id is half of what lets
+ * /welcome mint an app sign-in link (mint-handoff, SPEC-21), so it must not
+ * sit in an ad platform's event logs. Both sides: "lead-" + lowercase hex
+ * sha256 of the UTF-8 id.
+ */
+export async function leadEventId(sessionId: string): Promise<string> {
+  return `lead-${await sha256Hex(sessionId)}`;
+}
+
 export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');

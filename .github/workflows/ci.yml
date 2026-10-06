@@ -69,10 +69,10 @@ jobs:
           set -a; . "$RUNNER_TEMP/supabase.env"; set +a
           export SUPABASE_URL="$API_URL" SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY:-$SECRET_KEY}"
           INTEGRATION_TESTS=1 deno test --allow-all --node-modules-dir=none --coverage=cov supabase/functions/_integration/
-      - name: Coverage gate (webhook and checkout handlers ≥ 80% of lines)
+      - name: Coverage gate (webhook, checkout and mint-handoff handlers ≥ 80% of lines)
         if: ${{ !cancelled() && steps.supabase.outcome == 'success' }}
         run: |
-          deno coverage cov --lcov --output=coverage.lcov --include='supabase/functions/(dodo-webhook|create-checkout|capture-email|winback-sweep|resume|unsubscribe)/handler\.ts|supabase/functions/_shared/'
+          deno coverage cov --lcov --output=coverage.lcov --include='supabase/functions/(dodo-webhook|create-checkout|mint-handoff|capture-email|winback-sweep|resume|unsubscribe)/handler\.ts|supabase/functions/_shared/'
           deno run --allow-read supabase/functions/_testing/check_coverage.ts coverage.lcov
 
   # A production build in iPhone-sized WebKit: the HTTP checks (redirects,

@@ -5,6 +5,7 @@ import { assert, assertEquals, assertNotEquals } from 'jsr:@std/assert@1';
 import { FakeHttp } from '../_testing/fake_http.ts';
 import { createUser, db } from '../_testing/db.ts';
 import { awayFromWindowEdge, call, randomIp } from '../_testing/proxy.ts';
+import { leadEventId } from '../_shared/meta.ts';
 
 type Handler = (req: Request) => Promise<Response>;
 const fake = new FakeHttp();
@@ -157,7 +158,10 @@ itest('E8: a capture sends Meta a server-side Lead with the browser’s event id
   const leads = fake.capiEvents('Lead');
   assertEquals(leads.length, 1);
   const event = (leads[0].data as Array<Record<string, any>>)[0]; // eslint-disable-line @typescript-eslint/no-explicit-any
-  assertEquals(event.event_id, `lead-${sessionId}`); // what /email passes to pixel('Lead')
+  // What /email passes to pixel('Lead'): a hash, so the session id itself
+  // (half of what mints an app sign-in link, SPEC-21) never reaches Meta.
+  assertEquals(event.event_id, await leadEventId(sessionId));
+  assertEquals(JSON.stringify(leads[0]).includes(sessionId), false);
   assertEquals(event.user_data.fbp, 'fb.1.1.111');
   assertEquals(event.user_data.client_ip_address, ip);
   assertEquals(event.user_data.em[0].length, 64);

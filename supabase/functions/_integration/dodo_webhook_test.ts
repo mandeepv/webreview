@@ -24,6 +24,7 @@ import {
 } from '../_testing/db.ts';
 import { disputeEvent, newId, paymentEvent, paymentResponse, refundEvent, subscriptionEvent } from '../_testing/fixtures.ts';
 import { signedRequest, type SignOpts } from '../_testing/webhook.ts';
+import { sha256Hex } from '../_shared/handoff.ts';
 
 const fake = new FakeHttp();
 // Imported only when a local Supabase exists: the handler builds its client on load.
@@ -492,4 +493,58 @@ itest('W24: a renewal Dodo retries hours late cannot undo a newer expiry', async
   // A genuinely newer renewal still brings them back.
   await deliver(subscriptionEvent('subscription.renewed', { userId: user.id, subscriptionId: sub, occurredAt: t(14), nextBillingDate: isoIn(days(30)) }));
   assertEquals((await entitlement(user.id))?.status, 'active');
+});
+
+// ── W25: the email's sign-in link (SPEC-21) ────────────────────────────────
+
+const LINK_RE = /https:\/\/open\.kinderwell\.app\/k\/([A-Za-z0-9_-]{43})/;
+
+async function handoffKeysOf(userId: string) {
+  const { data, error } = await db().from('handoff_keys').select('*').eq('user_id', userId);
+  if (error) throw new Error(`handoff_keys read failed: ${error.message}`);
+  return data ?? [];
+}
+
+itest('W25: the welcome email carries one "Open Kinderwell" sign-in link, stored only as its hash, once per purchase', async () => {
+  fake.install();
+  const user = await createUser();
+  const sub = newId('sub');
+  const sessionId = crypto.randomUUID();
+  await putFunnelSession({ id: sessionId, user_id: user.id, capi: {} });
+  for (const type of ['subscription.active', 'subscription.renewed', 'subscription.active']) {
+    await deliver(subscriptionEvent(type, { userId: user.id, subscriptionId: sub, sessionId, customerEmail: user.email }));
+  }
+
+  const [welcome, ...more] = fake.welcomeEmails();
+  assertEquals(more.length, 0);
+  assertEquals(welcome.to, [user.email]);
+  const html = welcome.html ?? '';
+  assertStringIncludes(html, 'Open Kinderwell');
+  const key = LINK_RE.exec(html)?.[1];
+  assert(key, 'no sign-in link in the welcome email');
+  // The email-code steps stay as the fallback.
+  assertStringIncludes(html, 'Continue with Email');
+
+  const keys = await handoffKeysOf(user.id);
+  assertEquals(keys.length, 1);
+  assertEquals(keys[0].key_hash, await sha256Hex(key));
+  assertEquals(keys[0].source, 'email');
+  assertEquals(keys[0].used_at, null);
+
+  // The credential goes to the buyer's inbox and nowhere else.
+  for (const call of [...fake.to(HOSTS.meta), ...fake.to(HOSTS.posthog)]) {
+    assert(!JSON.stringify(call.body).includes(key), `sign-in key sent to ${call.url.hostname}`);
+  }
+});
+
+itest('W25b: when the checkout email differs from the account, no sign-in link is minted or sent', async () => {
+  fake.install();
+  const user = await createUser();
+  await deliver(
+    subscriptionEvent('subscription.active', { userId: user.id, subscriptionId: newId('sub'), customerEmail: 'someone-else@example.com' })
+  );
+  const [welcome] = fake.welcomeEmails();
+  assert(!LINK_RE.test(welcome.html ?? ''), 'a sign-in link went to a second inbox');
+  assertStringIncludes(welcome.html ?? '', 'Continue with Email');
+  assertEquals((await handoffKeysOf(user.id)).length, 0);
 });

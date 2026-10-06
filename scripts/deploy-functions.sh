@@ -3,7 +3,7 @@
 # fully green (spec work item 7). The integration and database tests need
 # Docker and run in CI, so "green on GitHub" is the bar, not a local run.
 #
-#   scripts/deploy-functions.sh                       # all six, to the linked project
+#   scripts/deploy-functions.sh                       # all seven, to the linked project
 #   scripts/deploy-functions.sh dodo-webhook resume   # just these
 #
 # Order still matters (MANUAL_STEPS §8.6–§8.7): apply migrations and set
@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALL=(capture-email create-checkout dodo-webhook winback-sweep unsubscribe resume)
+ALL=(capture-email create-checkout dodo-webhook winback-sweep unsubscribe resume mint-handoff)
 if [ $# -eq 0 ]; then FUNCS=("${ALL[@]}"); else FUNCS=("$@"); fi
 REQUIRED_CHECKS=(site functions backend e2e)
 

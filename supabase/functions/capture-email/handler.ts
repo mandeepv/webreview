@@ -8,7 +8,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { isFromProxy } from '../_shared/email.ts';
-import { afterResponse, sendCapiEvent } from '../_shared/meta.ts';
+import { afterResponse, leadEventId, sendCapiEvent } from '../_shared/meta.ts';
 import { isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
@@ -170,7 +170,7 @@ export async function handler(req: Request): Promise<Response> {
   await afterResponse(
     sendCapiEvent({
       eventName: 'Lead',
-      eventId: `lead-${body.sessionId}`,
+      eventId: await leadEventId(body.sessionId),
       sourcePath: '/email',
       user: { email, userId, fbp: body.meta?.fbp, fbc: body.meta?.fbc, ip: body.client_ip, ua: body.client_ua },
     })

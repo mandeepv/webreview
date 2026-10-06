@@ -76,6 +76,8 @@ test('B1: an iPhone visitor goes from the ad landing to an open checkout', async
   await expect.poll(() => checkouts.length).toBe(1);
   expect(checkouts[0]).toMatchObject({ plan: 'annual', displayedPrice: 59.99 });
   expect(checkouts[0].sessionId).toEqual(expect.any(String));
+  // SPEC-21: the browser-only nonce /welcome later proves itself with.
+  expect(checkouts[0].handoffNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
   // Dodo's overlay opens on the checkout URL the server returned — or, if the
   // SDK can't load, the page falls back to Dodo's hosted page. Either is a
   // working checkout; a dead button is not.

@@ -12,20 +12,21 @@ there too when prod goes live).
 
 ---
 
-## 1. Current state (as of 2026-10-05)
+## 1. Current state (as of 2026-10-07)
 
 | Layer | Status | Detail |
 |---|---|---|
 | Domain | ✅ live | `kinderwell.app`, Namecheap, auto-renew ON, WhoisGuard ON |
 | DNS | ✅ live | Single A record `@` → `216.198.79.1` (Vercel). Namecheap BasicDNS. Parking page OFF, domain redirect REMOVED. |
 | Hosting | ✅ live | Vercel project `kinderwell-web`, GitHub `mandeepv/kinderwell-web` (private), auto-deploys from `main` |
-| Supabase (dev) | ⚠️ behind code | `<DEV_PROJECT_REF>` (kinderwell-dev) — only migration `…0918_web2app` applied and the 4 original functions deployed (**Sep 19 versions**). **Not applied:** `…0928_email_opt_outs`, `…0930_webhook_hardening`, `…1005_event_ordering`. **Not set:** `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` (both now required). **Not deployed:** new code for all 6 functions (`capture-email`, `create-checkout`, `dodo-webhook`, `winback-sweep`, plus new `unsubscribe` and `resume`). Order and steps: MANUAL_STEPS §8.6 → §8.7. When deploying, deploy from `test/coverage` (or `main` once merged) with `scripts/deploy-functions.sh`: that code also carries the 2026-10-05 work: the buyer's app profile at first purchase, server-side Meta Lead/InitiateCheckout, event ordering, retention, and two bug fixes (§3). |
-| Website code | ⚠️ ahead of deploy | Sep 28 work is live on Vercel (`6cef1d7`). Everything since — the 2026-09-30 review fixes (`40eaa96`, `66f32c8`, `f556fc8`), the test-coverage work and two bug fixes (§3, 2026-10-05) — is **pushed to branch `test/coverage`, open as draft PR #1, NOT merged to `main`**, so not in production. Merging deploys the site to production (Vercel auto-deploys `main`); the site changes work against the OLD functions, so that is safe on its own. Merging does NOT deploy the edge functions. |
-| Tests / CI | ✅ green on `test/coverage` | GitHub Actions on every PR and push to `main`: `site` (typecheck, lint, 92 Vitest, build), `functions` (44 Deno unit), `backend` (local Supabase: 46 pgTAP checks + 74 integration tests, coverage gate ≥ 80% on webhook and checkout handlers), `e2e` (14 Playwright, iPhone WebKit). ~10 CI minutes per push (free tier: 2,000/month). **Branch protection on `main` is NOT on yet** — CI reports but does not block. Weekly preview workflow exists but is inert until configured (MANUAL_STEPS §8.8). Dodo test fixtures are schema-built, not captured. See README → Tests. |
+| Supabase (dev) | ⚠️ behind code | `<DEV_PROJECT_REF>` (kinderwell-dev) — only migration `…0918_web2app` applied and the 4 original functions deployed (**Sep 19 versions**). **Not applied:** `…0928_email_opt_outs`, `…0930_webhook_hardening`, `…1005_event_ordering`, and SPEC-21's `…1006_handoff_keys`. **Not set:** `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` (both now required). **Not deployed:** new code for all 7 functions (`capture-email`, `create-checkout`, `dodo-webhook`, `winback-sweep`, plus new `unsubscribe` and `resume`, and SPEC-21's new `mint-handoff`). Order and steps: MANUAL_STEPS §8.6 → §8.7. Deploy from `main` (everything is merged since 2026-10-07) with `scripts/deploy-functions.sh`: that code also carries the 2026-10-05 work: the buyer's app profile at first purchase, server-side Meta Lead/InitiateCheckout, event ordering, retention, and two bug fixes (§3). |
+| Website code | ✅ `main` = everything, live | **Merged 2026-10-07** (PR #1 test coverage + review fixes, PR #3 SPEC-21); Vercel deployed it to production. The site works with the OLD (Sep 19) functions still on Supabase: new parts that need new functions stay dormant until those are deployed: server-side Meta Lead/InitiateCheckout, the buyer's app profile, the sign-in links (`/welcome` keeps today's steps while `mint-handoff` doesn't answer). Vercel Production still points at the **dev** Supabase project + Dodo test mode (§5 switches it). |
+| Tests / CI | ✅ green on `main` | GitHub Actions on every PR and push to `main`: `site` (typecheck, lint, 120 Vitest, build), `functions` (55 Deno unit), `backend` (local Supabase: pgTAP `access`, `functions` and `handoff` tests + 89 integration tests, coverage gate ≥ 80% on the webhook, checkout and mint-handoff handlers), `e2e` (19 Playwright, iPhone WebKit). ~10 CI minutes per push (free tier: 2,000/month). **Branch protection on `main` is NOT on yet** — CI reports but does not block. Weekly preview workflow exists but is inert until configured (MANUAL_STEPS §8.8). Dodo test fixtures are schema-built, not captured. See README → Tests. |
 | External review | 🟡 in progress | `reviews/PROD_REVIEW.md` (2026-09-30). Status marked inline under every finding. All P0/P1 code fixes done; what's left is owner/dashboard steps + P2/P3 leftovers. |
 | Supabase (prod) | ⬜ untouched | `<PROD_PROJECT_REF>` (kinderwell) — NOTHING done yet, by design |
 | Dodo | ✅ test mode working | 2 products, test API key, webhook `<WEBHOOK_ENDPOINT_ID>` (all event types). **Full purchase→entitlement loop verified.** **KYC APPROVED (owner-reported 2026-09-28)** → live mode is now *available*, but nothing is provisioned in it yet (see §5 steps 2–3). |
 | Site routes | ✅ in code | `/` = brand homepage (App Store badge + quiz CTA), static. `/start` = the paid-ad landing (`?a=` variants, server-rendered). Ad params (`a`, `fbclid`, `utm_*`) hitting `/` are redirected to `/start` with the query intact (`next.config.mjs`). **Ad URLs should point at `/start`.** `/r/<token>` = resume link (win-back emails, "open in Safari"). `/manage` → Dodo portal. Mid-funnel pages send `X-Robots-Tag: noindex`. |
+| Sign-in links (SPEC-21) | 🟡 merged, dormant | Website half **merged to `main` 2026-10-07** (PR #3; CI green). Dormant until `mint-handoff` and the `…1006_handoff_keys` migration are deployed to the Supabase project the live site uses — today that is **dev**, so deploying them to dev switches the links on for kinderwell.app. **Deploying `mint-handoff` is the go-live: do it with or after app v1.3.0 is live** (an older app has no Paste screen). Buyers then open the app already signed in: `/welcome`'s **Get Kinderwell** copies a one-time link, the email gets an **Open Kinderwell** button, `open.kinderwell.app/k/<key>` serves the no-app fallback page. Also needs the Vercel domain `open.kinderwell.app`. Owner steps: MANUAL_STEPS §8.9. App half (redeem-handoff, paste screen): `~/mamalearn`, SPEC-21. |
 | Resend (email) | ✅ verified + sending | `kinderwell.app` (root, branded sender) + `mail.kinderwell.app` (fallback), region **us-east-1**, click/open tracking OFF (hurts transactional deliverability). DKIM+2 CNAMEs+DMARC live in Namecheap and verified by `dig`. `RESEND_API_KEY` + `EMAIL_FROM` set in Supabase. **Verified 2026-09-19** — a live API send returned a message id. NOTE: the API key is scoped to sending only, so it cannot read domain status; test by sending, not by querying. |
 | Meta pixel/CAPI | ⬜ not started | Funnel runs; no ad attribution until configured |
 | iOS app (Phase 0) | 🟡 code done, not shipped | Built 2026-10-04 in `~/mamalearn` on branch `feat/web-purchase-unlock` (8 commits, stacked on `design/onboarding-lesson-revamp`), shipping in **app v1.3.0 (build 12)**. Local only — not pushed, not on a device yet. **Web buyers still cannot unlock the app until 1.3.0 is live in the App Store.** Details + owner steps: §1b.1 and §3 (2026-10-04). |
@@ -178,12 +179,19 @@ Ordered. Nothing below is optional.
    (b) **/welcome fired the Meta Purchase for anyone who opened checkout**,
    paid or not; it now requires Dodo's `status=active|succeeded`.
 9c. **Test-coverage work and the remaining review fixes (2026-10-05) — PR #1,
-   MANUAL_STEPS §8.6–§8.8.** Code done and CI-green on `test/coverage`, not
-   merged, not deployed. Before deploying functions from it: set
+   MANUAL_STEPS §8.6–§8.8.** Merged to `main` and live on the site
+   2026-10-07; the functions are NOT deployed. Before deploying them: set
    `FUNNEL_PROXY_SECRET` **and** `UNSUBSCRIBE_SECRET` (both now required),
-   apply all four migrations (incl. new `…1005_event_ordering`), then
-   `scripts/deploy-functions.sh`. Also: merge PR #1, turn on branch
-   protection, capture real Dodo payloads for the test fixtures.
+   apply all five migrations (incl. `…1005_event_ordering` and SPEC-21's
+   `…1006_handoff_keys`), then `scripts/deploy-functions.sh` from `main`.
+   Also: turn on branch protection, capture real Dodo payloads for the test
+   fixtures.
+9d. **SPEC-21 sign-in links (2026-10-06) — MANUAL_STEPS §8.9.** Buyers open
+   the app already signed in; without it, every ad-driven buyer has to pick
+   the right sign-in button by hand. Merged to `main` 2026-10-07, dormant.
+   Needs the Vercel domain `open.kinderwell.app`, the `…1006_handoff_keys`
+   migration and four functions deployed, with `mint-handoff`'s deploy timed
+   with or after app v1.3.0 (that deploy is what switches it on).
 10. **Testimonials must be real.** The quotes on /start, /email and /offer
    (Sarah, Megan, Daniel, Aisha) — if they aren't from real customers, the
    FTC's 2024 fake-review rule makes each one a per-violation civil-penalty
@@ -314,6 +322,92 @@ active and unsubscribe links don't work. Owner steps: MANUAL_STEPS §8.6.
   route/redirect/header smoke test, screenshots at desktop + 390px.
   **NOT verified:** anything against Dodo, Supabase, Meta or Resend — the
   refund path in particular has never run end to end.
+
+### 2026-10-07 — everything merged to `main` and live on the site (functions NOT deployed)
+
+PR #3 (SPEC-21, website half) merged into `test/coverage`, then PR #1 into
+`main`, both CI-green; Vercel deployed `main` to production. kinderwell.app
+now runs: the 2026-09-30 review fixes, the 2026-10-05 fixes (CSP report-only,
+link-preview image, privacy policy with retention, quiz Back, pixel timing),
+the hashed Lead event id, and the SPEC-21 pages (`/k/<key>` and the AASA
+file on both hosts; `/welcome`'s handoff UI). Everything that needs NEW
+functions is dormant because Supabase still runs the Sep 19 functions:
+- `/welcome` shows today's steps: `/api/mint-handoff` gets no link (the
+  function doesn't exist yet), so the page never says "tap Paste".
+- No server-side Lead/InitiateCheckout, no app profile, no event ordering,
+  no retention — those live in the functions and the sweep.
+- The browser's Lead pixel already uses `lead-<sha256(sessionId)>`; the old
+  capture-email sends no server Lead, so nothing mismatches. Deploy the new
+  capture-email and its server Lead uses the same id.
+
+What remains is all owner-side: secrets, migrations, `scripts/deploy-functions.sh`
+from `main` (MANUAL_STEPS §8.6–§8.9), with `mint-handoff` timed with or after
+app v1.3.0; branch protection; the public review mirror re-sync.
+
+### 2026-10-06 — SPEC-21 sign-in links, website half (CODE ONLY, PR #3, not merged or deployed)
+
+Spec: `~/mamalearn/docs/specs/SPEC-21-purchase-handoff.md` (the app half
+lives there too). Local runs: 55 Deno unit, 120 site, 19 browser tests, all
+green; build OK. The new pgTAP file and the integration tests (M0–M9, C10,
+W25) need Docker, so they run only in CI. **CI, 2026-10-07: all green** — pgTAP
+incl. `handoff_test.sql`, 89 integration tests, 19 browser tests;
+`mint-handoff/handler.ts` 91.8% lines (coverage gate ≥ 80%). One fix on the
+way: browser test B3 assumed WebKit never loads apps.apple.com (true on
+macOS, not on Linux CI); its recorder now cancels that tap after noting the
+page let it through.
+
+- **Migration `20261006000000_handoff_keys.sql`** — authored in the APP repo
+  this time, copied here unchanged (+ its pgTAP test `handoff_test.sql`).
+  `handoff_keys` (sha256 of each key, service role only, single use, ≤ 7
+  days) and `funnel_sessions.handoff_nonce_hash`.
+- **`create-checkout`** stores the sha256 of a browser-only nonce (made on
+  `/offer`, kept in localStorage `kw_handoff`). Written after the duplicate
+  guard, so nobody can swap it once the purchase has landed; its own write,
+  so a missing column never costs the CAPI keys.
+- **New `mint-handoff`** (via `/api/mint-handoff`): sessionId + nonce →
+  `{ link }` when the purchase landed < 24 h ago and the entitlement is
+  active. 404 for a wrong nonce or unknown session alike; 409 while the
+  webhook hasn't landed (the page retries for about a minute); 5 keys per
+  session a day; attempts limited per IP and session. In the CI coverage
+  gate (≥ 80%) with the webhook and checkout.
+- **`dodo-webhook`** mints a key at first activation and adds an **Open
+  Kinderwell** button to the welcome email, above the email-code steps
+  (kept as the fallback). Not when the checkout email differs from the
+  account (a credential goes to the account's own inbox only), and not if
+  the mint fails (no migration yet): the email then goes out as before.
+- **`/welcome`**: with a link, the iPhone button reads **Get Kinderwell**
+  (copies the link inside the tap, then follows the App Store link), plus
+  "Already have the app? **Open Kinderwell**"; desktop's QR code holds the
+  link. Without one (another browser, refused, timed out) the page is
+  exactly as before. New PostHog events, outcomes only:
+  `web_funnel_handoff_link {result}`, `web_funnel_get_app_tapped {link,
+  copied}`, `web_funnel_open_app_tapped`.
+- **`open.kinderwell.app`**: `/k/<key>` is a bare route handler (no layout,
+  so no pixel/PostHog; nothing loaded from anywhere; `no-referrer`,
+  `no-store`, noindex, an enforced hash-pinned CSP). It never looks the key
+  up. Its "Open Kinderwell" is the same key on `kinderwell.app` (another
+  host, so iOS opens the app without Safari's "Open in Kinderwell?"
+  question, which a `kinderwell://` link would raise).
+  `/.well-known/apple-app-site-association` (served on both hosts) claims
+  `/k/*` for team `8B52Q4QNLH`, `com.kinderwell.app` and `.dev`; the app
+  must list both `applinks:open.kinderwell.app` and `applinks:kinderwell.app`.
+  Every other path on `open.kinderwell.app` redirects to kinderwell.app
+  (`next.config.mjs`).
+- **The Lead event id is now `lead-<sha256(sessionId)>`** (browser and
+  `capture-email` alike, one pinned test vector in each), so the session id
+  (half of what mints a link) no longer reaches Meta. It still reaches
+  processors: Dodo's checkout metadata (`funnel_session_id`) and the resume
+  links in win-back emails. Deploy `capture-email` from this branch in the
+  same window as the site merge, or Leads stop deduplicating until both are out.
+  *(2026-10-07: not an issue in practice — the capture-email deployed today
+  is the Sep 19 one, which sends no server Lead, so there is nothing to
+  deduplicate until the new one is deployed, and that one uses the new id.)*
+- **CSP reports can't carry a key:** `/k/*` is left out of the site-wide
+  report-only policy (it enforces its own strict one, with no reporting),
+  and `/api/csp-report` blanks `/k/<…>` in anything it logs. `/k/*` sends
+  `X-Robots-Tag: noindex, nofollow, noarchive`.
+- **Known limit:** Vercel's request log records `/k/<key>` paths. The key
+  is single use and ≤ 7 days, and only the owner can read the log.
 
 ### 2026-10-05 (later) — remaining review fixes + the buyer's app profile (CODE ONLY, on `test/coverage`, not deployed)
 
@@ -577,6 +671,26 @@ In order of likelihood:
 4. **Their app is older than v1.3.0** — older builds know nothing about web
    purchases. They need to update.
 
+### "A buyer says Paste didn't sign them in" / "the email button opened Safari"
+SPEC-21 sign-in links. Every failure falls back to the email code, so the
+buyer can always get in with **Sign in → Continue with Email**. To find out why:
+1. **No Paste screen at all:** they tapped Get Kinderwell before the link
+   was ready and it timed out, copied something else since, or opened the
+   app signed in already. PostHog `web_funnel_handoff_link` shows whether
+   their page got a link (`result`), `web_funnel_get_app_tapped` whether it
+   was copied.
+2. **"This link has expired":** used already or older than 7 days. Table
+   Editor → `handoff_keys` for their user id: `used_at` set = used.
+3. **The email button opened Safari, not the app:** the link page still
+   works (Get Kinderwell → install → Paste). If it happens to everyone:
+   check https://open.kinderwell.app/.well-known/apple-app-site-association
+   loads (JSON, no redirect), that the app build has
+   `applinks:open.kinderwell.app` and `applinks:kinderwell.app`, and that
+   Resend click tracking is OFF.
+4. **No Open Kinderwell button in the email:** the checkout email differed
+   from the account (by design), or the mint failed: dodo-webhook logs
+   `handoff key insert failed` (is the migration applied?).
+
 ### "Checkout says 'Our pricing is being updated'"
 `create-checkout` found the page's price ≠ the Dodo product's price and is
 refusing checkouts for that plan (you also got a `Checkout blocked` alert).
@@ -607,7 +721,9 @@ row at first purchase. Check Table Editor → `user_profiles` for their user id:
 
 ### "Meta shows a Lead / InitiateCheckout / Purchase twice"
 Each browser event must carry the same id as its server twin: Lead
-`lead-<sessionId>`, InitiateCheckout `ic-<checkout eventId>`, Purchase the
+`lead-<sha256 of the funnel session id>` (since 2026-10-06, SPEC-21; before
+that the plain id, so a site and a `capture-email` from either side of that
+change don't dedup), InitiateCheckout `ic-<checkout eventId>`, Purchase the
 checkout's `eventId`. Events Manager → Test events shows both sources and
 whether they were deduplicated. A Browser-only Purchase with no Server twin
 means the webhook's CAPI call failed (dodo-webhook logs: `CAPI Purchase failed`).
@@ -678,9 +794,9 @@ Do NOT copy dev values. Everything below is separately provisioned:
    (takes a backup first). Never `supabase link` to the prod ref.
 5. Enable **Email OTP** auth on the prod project (dev has it pending too —
    MANUAL_STEPS §2.2).
-6. Apply ALL FOUR migrations (`…0918_web2app`, `…0928_email_opt_outs`,
-   `…0930_webhook_hardening`, `…1005_event_ordering`), THEN deploy
-   all 6 functions against prod (`scripts/deploy-functions.sh`) + set prod secrets
+6. Apply ALL FIVE migrations (`…0918_web2app`, `…0928_email_opt_outs`,
+   `…0930_webhook_hardening`, `…1005_event_ordering`, `…1006_handoff_keys`), THEN deploy
+   all 7 functions against prod (`scripts/deploy-functions.sh`) + set prod secrets
    (`DODO_ENV=live`, and `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` and
    `MAILING_ADDRESS` — funnel requests, signed links and marketing email
    are refused without them).

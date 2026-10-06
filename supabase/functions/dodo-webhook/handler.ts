@@ -18,6 +18,8 @@
 // IMPORTANT: deploy with --no-verify-jwt (Dodo can't send a Supabase JWT):
 //   supabase functions deploy dodo-webhook --no-verify-jwt
 // Requires migration 20260930000000_webhook_hardening.sql — apply it first.
+// The email's sign-in link needs 20261006000000_handoff_keys.sql; without it
+// the email simply goes out with the email-code steps only.
 //
 // Secrets: DODO_WEBHOOK_SECRET, DODO_API_KEY, DODO_ENV, RESEND_API_KEY,
 // EMAIL_FROM, SUPPORT_EMAIL, ALERT_EMAIL (optional), SITE_URL, APP_STORE_URL,
@@ -29,6 +31,7 @@ import { alertOwner, escapeHtml } from '../_shared/email.ts';
 import { cancelDodoSubscription, DODO_BASE } from '../_shared/dodo.ts';
 import { decideSubscriptionWrite, laterOf, STATUS_BY_EVENT } from '../_shared/entitlement.ts';
 import { classifyRefundOrDispute, describePlan as describePlanFrom, PlanSummary } from '../_shared/payment_events.ts';
+import { mintHandoffKey } from '../_shared/handoff.ts';
 import { sendCapiEvent } from '../_shared/meta.ts';
 import { profileFromAnswers } from '../_shared/profile.ts';
 import { verifyStandardWebhook } from '../_shared/signature.ts';
@@ -319,10 +322,17 @@ async function fireFirstActivation(userId: string, subscriptionId: string, data:
   }
 
   const plan = describePlan(data);
+  // SPEC-21: the email's "Open Kinderwell" button signs the buyer straight
+  // in. That is a login credential, so it goes only to the account's own
+  // inbox: when Dodo's email differs (P1-2) the email keeps just the
+  // email-code steps. A failed mint does the same.
+  const sameInbox =
+    !!accountEmail && (!checkoutEmail || checkoutEmail.toLowerCase() === accountEmail.toLowerCase());
+  const signInLink = sameInbox ? await mintHandoffKey(admin, userId, 'email').catch(() => null) : null;
   // Side effects are best-effort: a failed email must not 500 the webhook
   // (that would retry the entitlement write it already made).
   await Promise.allSettled([
-    sendHandoffEmail(accountEmail || checkoutEmail, checkoutEmail, plan),
+    sendHandoffEmail(accountEmail || checkoutEmail, checkoutEmail, plan, signInLink),
     fireCapiPurchase(userId, accountEmail || checkoutEmail, metadata, plan),
   ]);
 }
@@ -483,7 +493,12 @@ async function parkUnlinked(data: unknown, subscriptionId: string | null | undef
 
 // ── Side effects ─────────────────────────────────────────────────────────────
 
-async function sendHandoffEmail(accountEmail: string, checkoutEmail: string, plan: PlanSummary) {
+async function sendHandoffEmail(
+  accountEmail: string,
+  checkoutEmail: string,
+  plan: PlanSummary,
+  signInLink: string | null
+) {
   const apiKey = Deno.env.get('RESEND_API_KEY');
   if (!apiKey || !accountEmail) return;
   const appStoreUrl = Deno.env.get('APP_STORE_URL') ?? '';
@@ -509,13 +524,7 @@ async function sendHandoffEmail(accountEmail: string, checkoutEmail: string, pla
   <h1 style="font-size:22px">You're in. Two steps left.</h1>
   <p style="line-height:1.6"><strong>Step 1 — Download Kinderwell on your iPhone</strong></p>
   <p><a href="${appStoreUrl}" style="display:inline-block;background:#4F8F8B;color:#fff;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600">Download on the App Store</a></p>
-  <p style="line-height:1.6"><strong>Step 2 — Sign in with ${safeEmail}</strong></p>
-  <ol style="line-height:1.6;padding-left:20px">
-    <li>Open Kinderwell. At the bottom of the first screen, tap <strong>Sign in</strong>
-    (next to "Already have an account?") — not <strong>Get started</strong>, which is for new users.</li>
-    <li>Choose <strong>Continue with Email</strong> and enter <strong>${safeEmail}</strong>.
-    We'll send a 6-digit code — no password needed. Your subscription unlocks automatically.</li>
-  </ol>
+  ${signInLink ? signInLinkSteps(signInLink, safeEmail) : signInSteps(safeEmail, 'Step 2 — Sign in with')}
   <p style="line-height:1.6;color:#6B6B6B;font-size:13px">
   Your plan: ${escapeHtml(plan.label)}. It renews automatically until you cancel at
   <a href="${siteUrl}/manage">${manageLabel}</a> (sign in with this email).
@@ -526,6 +535,34 @@ async function sendHandoffEmail(accountEmail: string, checkoutEmail: string, pla
     }),
   });
   if (!res.ok) console.error('handoff email failed', res.status, await res.text().catch(() => ''));
+}
+
+/**
+ * Step 2 when there is a sign-in link (SPEC-21): one tap opens the app signed
+ * in, or, without the app, the link page that gets it. The email-code steps
+ * stay underneath as the fallback for an expired or used link.
+ */
+function signInLinkSteps(link: string, safeEmail: string): string {
+  return `
+  <p style="line-height:1.6"><strong>Step 2 — Open Kinderwell from this email</strong></p>
+  <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#2f6b4a;color:#fff;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600">Open Kinderwell</a></p>
+  <p style="line-height:1.6">Tap it on your iPhone and Kinderwell opens already signed in to your
+  account. No password, no code.</p>
+  <p style="line-height:1.6;color:#6B6B6B;font-size:13px">The button works once, for 7 days, and it
+  signs in as you, so please don't forward this email.</p>
+  ${signInSteps(safeEmail, 'If the button doesn’t work, sign in with')}`;
+}
+
+/** Button labels quoted EXACTLY as the app shows them — see the note in app/welcome/welcome-client.tsx. */
+function signInSteps(safeEmail: string, heading: string): string {
+  return `
+  <p style="line-height:1.6"><strong>${heading} ${safeEmail}</strong></p>
+  <ol style="line-height:1.6;padding-left:20px">
+    <li>Open Kinderwell. At the bottom of the first screen, tap <strong>Sign in</strong>
+    (next to "Already have an account?") — not <strong>Get started</strong>, which is for new users.</li>
+    <li>Choose <strong>Continue with Email</strong> and enter <strong>${safeEmail}</strong>.
+    We'll send a 6-digit code — no password needed. Your subscription unlocks automatically.</li>
+  </ol>`;
 }
 
 async function fireCapiPurchase(

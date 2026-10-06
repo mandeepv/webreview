@@ -61,11 +61,12 @@ uncommitted code, an unpushed commit, or a commit whose CI isn't fully green.
 | `app/page.tsx` + `landing-client.tsx` | Landing, message-match variants via `?a=` |
 | `app/quiz/[step]/` | Quiz engine; content lives in `lib/quiz/questions.ts` (copy edits are data edits) |
 | `app/email` → `building` → `plan` → `offer` → `welcome` | The funnel spine |
+| `app/k/[key]` + `app/.well-known/apple-app-site-association` | SPEC-21 sign-in links on `open.kinderwell.app`: the page a link opens without the app (no analytics, by design), and Apple's file that lets the app claim `/k/*`. Browser side: `lib/handoff.ts` |
 | `app/waitlist` | Soft exit for Android / out-of-range ages |
 | `app/api/*` | Thin proxies to edge functions (attach IP/UA for Meta CAPI) |
 | `lib/session.ts` | localStorage session + first-touch attribution |
 | `lib/analytics.ts` / `lib/meta.ts` | Typed PostHog registry / Meta Pixel wrapper |
-| `supabase/functions/` | capture-email, create-checkout, dodo-webhook (single writer of entitlements), winback-sweep, resume, unsubscribe. Each `index.ts` only serves its `handler.ts`, which the integration tests call directly |
+| `supabase/functions/` | capture-email, create-checkout, dodo-webhook (single writer of entitlements), winback-sweep, resume, unsubscribe, mint-handoff (the welcome page's one-time app sign-in link, SPEC-21). Each `index.ts` only serves its `handler.ts`, which the integration tests call directly |
 | `supabase/functions/_integration/`, `_testing/`, `_fixtures/` | Integration tests, their harness, Dodo payload fixtures (never deployed: `_` folders aren't functions) |
 | `supabase/tests/database/` | pgTAP database tests |
 | `e2e/` | Playwright browser tests |
@@ -78,3 +79,7 @@ uncommitted code, an unpushed commit, or a commit whose CI isn't fully green.
 - Dev Supabase + Dodo test mode everywhere except the Vercel Production env.
 - `entitlements` is written ONLY by the dodo-webhook function; an error from
   any entitlement check is never treated as entitled.
+- A handoff key (SPEC-21) is a login credential: stored only as its sha256,
+  never logged, never in an analytics event, and never in the URL of a page
+  that loads analytics (the link page is a bare route handler for that
+  reason). App INVARIANTS #29.

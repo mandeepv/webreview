@@ -59,6 +59,7 @@ supabase functions deploy dodo-webhook --no-verify-jwt
 supabase functions deploy winback-sweep --no-verify-jwt
 supabase functions deploy unsubscribe --no-verify-jwt
 supabase functions deploy resume --no-verify-jwt   # added 2026-09-30 (win-back / Safari links)
+supabase functions deploy mint-handoff --no-verify-jwt   # added 2026-10-06 (SPEC-21, §8.9)
 ```
 
 ### 2.4 Set function secrets
@@ -288,9 +289,11 @@ marked inline in `reviews/PROD_REVIEW.md`. What only you can do, **in this order
       first.
       `cp supabase/migrations/20261005000000_event_ordering.sql ~/mamalearn/supabase/migrations/`
 - [ ] **Set `UNSUBSCRIBE_SECRET`** (§8.6) — now required.
-- [ ] **Then deploy all SIX functions** (§2.3 — `resume` is new) with
+- [ ] **Then deploy the six functions** (§2.3 — `resume` is new) with
       `scripts/deploy-functions.sh`. They read the new columns; deploying
-      before the migrations breaks the webhook.
+      before the migrations breaks the webhook. The seventh, `mint-handoff`,
+      is not part of this step: it is deployed in §8.9 step 3 (from `main`,
+      like everything since 2026-10-07), after its own migration.
 - [ ] **Vercel env:** `NEXT_PUBLIC_DODO_BUSINESS_ID` = your Dodo business id
       (dashboard) so `/manage` opens Dodo's Kinderwell-specific login. Redeploy.
 - [ ] **Vercel firewall rule** (§8.6) is still worth adding on top: the code
@@ -340,9 +343,8 @@ judgement steps.
       → Add rule → require status checks `site`, `functions`, `backend`,
       `e2e`). Until then CI reports problems but nothing stops a red merge —
       and Vercel deploys whatever lands on `main`.
-- [ ] **Merge PR #1** (`test/coverage`) once you've looked it over. That
-      deploys the site to production (safe against the current functions);
-      it does not deploy functions.
+- [x] **Merge PR #1** (`test/coverage`) — merged 2026-10-07 together with
+      PR #3; the site is live, the functions are not deployed.
 - [ ] Optional — **weekly preview check:** GitHub → Settings → Secrets and
       variables → Actions: variable `E2E_BASE_URL` (a stable preview URL) and
       secret `VERCEL_BYPASS_SECRET` (Vercel → Settings → Deployment
@@ -375,15 +377,88 @@ judgement steps.
       with `whsec_`, the raw-string fallback in `_shared/signature.ts` can be
       dropped — tell me and I'll remove it.
 
+## 8.9 Sign-in links for buyers (SPEC-21, added 2026-10-06)
+
+What it does: after paying, a buyer taps **Get Kinderwell** on the welcome
+page. That copies a one-time sign-in link and opens the App Store. When they
+open the app, it offers to paste the link, and they're in: no sign-in screen,
+no code. The welcome email gets an **Open Kinderwell** button with its own
+link. The old email-code steps stay on both, as the fallback.
+
+The links live on a new address, `open.kinderwell.app`. It has to be a
+separate address: a link to the same site you're already on opens in Safari,
+not in the app.
+
+**Order matters:** the database change first, then the functions, then the
+website. Dev first, then the same on prod.
+
+- [ ] **1. Add the address in Vercel (about 5 minutes).**
+  1. Vercel → project **kinderwell-web** → **Settings** → **Domains**.
+  2. Type `open.kinderwell.app` → **Add**. If it asks, choose "connect to
+     an environment: Production" (not a redirect).
+  3. Vercel shows one DNS record to add, usually **CNAME**, name `open`,
+     value `cname.vercel-dns.com` (copy whatever Vercel shows).
+  4. Namecheap → **Domain List** → kinderwell.app → **Manage** →
+     **Advanced DNS** → **Add New Record** → **CNAME Record**. Host: `open`.
+     Value: the one from Vercel. TTL: Automatic. Save (the green tick).
+  5. Back in Vercel, wait for the domain to say **Valid Configuration**
+     (a few minutes).
+  6. Check: open https://open.kinderwell.app/.well-known/apple-app-site-association
+     in a browser. You should see a short block of text starting with
+     `{"applinks"`. Opening https://open.kinderwell.app/ should take you to
+     kinderwell.app. (The code is live since 2026-10-07, so both work as
+     soon as the domain is added.)
+- [ ] **2. Database (dev):** apply `20261006000000_handoff_keys.sql`. It is
+      the app repo's migration (copied here unchanged), so apply it the
+      app's way, from `~/mamalearn` (`supabase db push` against dev). Skip
+      if the app work already applied it to dev; Table Editor shows a
+      `handoff_keys` table when it's there.
+- [ ] **3. Functions (dev):** from a pushed commit with green CI, run
+      `scripts/deploy-functions.sh capture-email create-checkout dodo-webhook mint-handoff`.
+      (`mint-handoff` is new and needs no new secret. `capture-email` is in
+      the list because Meta's Lead event id changed with this work: the live
+      site already sends the new id, and the new capture-email sends its
+      server twin with the same one. The old capture-email sends no server
+      Lead, so nothing mismatches before this step.)
+      ⚠️ **The live site uses the DEV Supabase project** (until §9), so this
+      step on dev is also what switches the sign-in links on for
+      kinderwell.app — see step 5.
+- [ ] **4. Resend: keep click tracking OFF** (it is today). With it on,
+      Resend rewrites every link in the email through its own address, and
+      the sign-in button would open Safari instead of the app.
+- [ ] **5. Going live = deploying `mint-handoff`.** The website code was
+      merged and deployed on 2026-10-07 but stays dormant: while
+      `mint-handoff` isn't deployed, `/welcome` shows today's steps. Once it
+      answers (step 3, on the project the site uses), buyers are told to
+      tap **Paste**, which only v1.3.0 understands. So deploy it **with or
+      after** v1.3.0 is live in the App Store — or earlier only for the step 6
+      test, while no ads run and Dodo is in test mode. Steps 1, 2 and 4 are
+      safe any time.
+- [ ] **6. Test it once, end to end, in test mode (§7):** pay on an iPhone
+      → tap **Get Kinderwell** → install the v1.3.0 build → open it → tap
+      **Paste** → you land in the lessons. Also: tap **Open Kinderwell** in
+      the welcome email on the iPhone: the app should open, not Safari.
+      Last, the link page's own button, with the app installed:
+      1. In the email, press and hold **Open Kinderwell** → **Copy Link**.
+      2. Open Safari, paste the link into the address bar, and go. (Typing or
+         pasting a link is the one way to see this page with the app installed.)
+      3. Tap **Open Kinderwell** on that page. The app should open straight
+         away, with no "Open in Kinderwell?" question from Safari. (If you
+         used the email button first, the app will say the link was already
+         used. That's fine: this step only checks how the app opens.)
+- [ ] **7. Prod:** the same steps 2–3 on prod (the migration through the
+      app's `scripts/db-push-prod.sh`), as part of the v1.3.0 release, close
+      to the website merge (step 5): until both are out, Meta counts Leads twice.
+
 ## 9. Production flip (only after §7 passes)
 
 - [x] **Dodo KYC/business verification APPROVED** (owner-reported 2026-09-28).
 - [ ] Dodo live mode: **recreate both products** (product IDs do NOT carry
       over from test), new live API key, new webhook endpoint + secret.
 - [ ] Supabase prod: migration via `scripts/db-push-prod.sh`; enable Email OTP;
-      apply ALL FOUR migrations (`20260918…_web2app`, `20260928…_email_opt_outs`,
-      `20260930…_webhook_hardening`, `20261005…_event_ordering`) BEFORE deploying the functions;
-      deploy all six functions against prod; set secrets with `DODO_ENV=live`,
+      apply ALL FIVE migrations (`20260918…_web2app`, `20260928…_email_opt_outs`,
+      `20260930…_webhook_hardening`, `20261005…_event_ordering`, `20261006…_handoff_keys`) BEFORE deploying the functions;
+      deploy all seven functions against prod (mint-handoff since 2026-10-06); set secrets with `DODO_ENV=live`,
       the live key/product IDs/webhook secret, and `SITE_URL=https://kinderwell.app`.
 - [ ] Vercel Production env vars: prod Supabase URL + anon key, and
       `NEXT_PUBLIC_SITE_URL=https://kinderwell.app`.

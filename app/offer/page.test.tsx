@@ -70,13 +70,29 @@ describe('/offer', () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(fetchMock.mock.calls[0][0]).toBe('/api/create-checkout');
-    expect(body).toEqual({ sessionId: 'session-1', plan: 'annual', displayedPrice: 59.99, meta: { fbp: 'fb.1.1.111' } });
+    expect(body).toEqual({
+      sessionId: 'session-1',
+      plan: 'annual',
+      displayedPrice: 59.99,
+      meta: { fbp: 'fb.1.1.111' },
+      handoffNonce: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+    });
     await waitFor(() =>
       expect(openOverlayCheckout).toHaveBeenCalledWith('https://test.checkout.dodopayments.com/session/cks_1', expect.any(Function))
     );
     // /welcome fires the browser Purchase with the same event id the webhook sends to Meta.
     expect(localStorage.getItem('kw_purchase_event_id')).toBe('evt_1');
     expect(pixel).toHaveBeenCalledWith('InitiateCheckout', { value: 59.99, currency: 'USD' }, 'ic-evt_1');
+  });
+
+  it('every checkout tap sends the same handoff nonce, which /welcome can present later (SPEC-21)', async () => {
+    reply(200, { checkoutUrl: 'https://x', eventId: 'e' });
+    await tapGetMyPlan();
+    cleanup();
+    await tapGetMyPlan();
+    const [first, second] = fetchMock.mock.calls.map((c) => JSON.parse(c[1].body).handoffNonce);
+    expect(second).toBe(first);
+    expect(JSON.parse(localStorage.getItem('kw_handoff')!)).toEqual({ sessionId: 'session-1', nonce: first });
   });
 
   it('the monthly plan sends the monthly price', async () => {

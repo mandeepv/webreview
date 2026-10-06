@@ -6,7 +6,7 @@
 // mirror the app components' own comments so the two stay recognizable twins.
 
 import Link from 'next/link';
-import { ReactNode } from 'react';
+import { MouseEvent, ReactNode } from 'react';
 
 /**
  * Serif text where *starred* spans render italic — the design's emphasis move
@@ -58,13 +58,22 @@ export function PrimaryButton({
   full = true,
 }: {
   children: ReactNode;
-  onClick?: () => void;
+  onClick?: (e: MouseEvent<HTMLElement>) => void;
   href?: string;
   disabled?: boolean;
   full?: boolean;
 }) {
   const cls = `${full ? 'w-full' : 'px-12'} flex h-[58px] items-center justify-center rounded-full bg-forest text-[17px] font-semibold text-cream transition active:scale-[0.99] hover:bg-forest-deep disabled:opacity-40`;
   if (href) {
+    // Off-site (the App Store): a plain link that the browser follows as a
+    // real tap, with the page's handler run first. next/link is for our routes.
+    if (/^https?:\/\//.test(href)) {
+      return (
+        <a href={href} onClick={onClick} className={cls}>
+          {children}
+        </a>
+      );
+    }
     return (
       <Link href={href} className={cls}>
         {children}

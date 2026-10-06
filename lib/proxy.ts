@@ -13,7 +13,7 @@ import { config } from './config';
 
 const FUNCTION_TIMEOUT_MS = 20_000;
 
-type FunctionName = 'capture-email' | 'create-checkout' | 'unsubscribe' | 'resume';
+type FunctionName = 'capture-email' | 'create-checkout' | 'unsubscribe' | 'resume' | 'mint-handoff';
 
 /** Calls an edge function through the proxy path; returns its status and parsed body. */
 export async function callFunction(

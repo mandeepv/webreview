@@ -24,6 +24,7 @@ const ROUTES = [
   ['capture-email', () => import('./capture-email/route')],
   ['create-checkout', () => import('./create-checkout/route')],
   ['resume', () => import('./resume/route')],
+  ['mint-handoff', () => import('./mint-handoff/route')],
 ] as const;
 
 describe.each(ROUTES)('/api/%s', (fn, load) => {
@@ -50,6 +51,18 @@ describe.each(ROUTES)('/api/%s', (fn, load) => {
   it('gives the function time to answer before the platform kills it', async () => {
     const mod = await load();
     expect(mod.maxDuration).toBeGreaterThan(20); // the proxy itself gives up at 20s
+  });
+});
+
+describe('/api/mint-handoff', () => {
+  it('passes the sign-in link through and tells every cache to keep it', async () => {
+    const { POST } = await import('./mint-handoff/route');
+    const link = `https://open.kinderwell.app/k/${'k'.repeat(43)}`;
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ link }), { status: 200 }));
+    const res = await POST(post('/api/mint-handoff', '{"sessionId":"s","nonce":"n"}'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ link });
+    expect(res.headers.get('cache-control')).toBe('no-store');
   });
 });
 

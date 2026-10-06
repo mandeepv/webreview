@@ -79,6 +79,11 @@ type FunnelEvent =
   | { name: 'web_funnel_checkout_abandoned'; props?: undefined }
   | { name: 'web_funnel_open_in_safari_clicked'; props?: undefined }
   | { name: 'web_funnel_welcome_viewed'; props: { payment: 'confirmed' | 'processing' | 'failed' | 'unknown' } }
+  // SPEC-21 handoff on /welcome. Outcomes only — NEVER the link or its key,
+  // which is a login credential. `result` is 'ready' or mint-handoff's error code.
+  | { name: 'web_funnel_handoff_link'; props: { result: string } }
+  | { name: 'web_funnel_get_app_tapped'; props: { link: 'ready' | 'pending' | 'none'; copied: boolean } }
+  | { name: 'web_funnel_open_app_tapped'; props?: undefined }
   | { name: 'web_funnel_error'; props: { where: string } };
 
 export function track(event: FunnelEvent['name'], props?: Record<string, unknown>): void {

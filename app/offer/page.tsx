@@ -15,6 +15,7 @@ import { getSession, readMetaCookies, save } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { closeOverlayCheckout, openOverlayCheckout, preloadCheckout } from '@/lib/checkout';
 import { pixel } from '@/lib/meta';
+import { nonceForCheckout } from '@/lib/handoff';
 import { PayMethodsLine } from './in-app-note';
 
 // Paywall structure per the web2app research (botsi/funnelfox teardowns of
@@ -161,6 +162,9 @@ export default function OfferPage() {
           // page didn't show (create-checkout refuses on a mismatch).
           displayedPrice: plan === 'monthly' ? config.priceMonthly : config.priceAnnual,
           meta: readMetaCookies(),
+          // Lets /welcome prove it is this browser and get the app sign-in
+          // link (SPEC-21). Only its hash is stored; it goes nowhere else.
+          handoffNonce: nonceForCheckout(s.id) ?? undefined,
         }),
         // A hung request must never leave the button stuck on "Opening…".
         signal: AbortSignal.timeout(25_000),

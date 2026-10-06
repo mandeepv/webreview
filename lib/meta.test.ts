@@ -56,3 +56,16 @@ describe('whenPixelReady', () => {
     expect(cancelled).not.toHaveBeenCalled();
   });
 });
+
+describe('leadEventId', () => {
+  // The same vector is pinned in supabase/functions/_shared/meta_test.ts:
+  // the server-side Lead must carry the identical id or Meta counts it twice.
+  it('is "lead-" + the sha256 of the session id, never the id itself (SPEC-21)', async () => {
+    vi.useRealTimers();
+    const { leadEventId } = await load();
+    const sessionId = '0b6f5a3e-1d2c-4e5f-8a9b-0c1d2e3f4a5b';
+    const id = await leadEventId(sessionId);
+    expect(id).toBe('lead-1129de95b35538debaff2294377bffd8b1e5bb25b8b6cb843ccdbbb9a50377c4');
+    expect(id).not.toContain(sessionId);
+  });
+});

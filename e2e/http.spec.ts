@@ -81,3 +81,31 @@ test('shared links get a 1200×630 preview image (P2-5)', async ({ request }) =>
   expect(img.headers()['content-type']).toContain('image/png');
   expect(html).toContain('summary_large_image');
 });
+
+// SPEC-21: the sign-in link page and Apple's association file.
+const KEY = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE';
+
+test('the sign-in link page loads no analytics, sends no Referer, and is never cached or indexed', async ({ request }) => {
+  const res = await request.get(`/k/${KEY}`);
+  expect(res.status()).toBe(200);
+  const h = res.headers();
+  expect(h['referrer-policy']).toBe('no-referrer');
+  expect(h['cache-control']).toContain('no-store');
+  expect(h['x-robots-tag']).toBe('noindex, nofollow, noarchive');
+  expect(h['content-security-policy']).toContain("default-src 'none'");
+  // No report-only policy here: a CSP report carries the page URL, i.e. the key.
+  expect(h['content-security-policy-report-only']).toBeUndefined();
+  expect((await request.get('/welcome')).headers()['content-security-policy-report-only']).toContain('report-uri');
+  const html = await res.text();
+  expect(html).not.toMatch(/posthog|fbevents|fbq\(|connect\.facebook|_next\//i);
+  expect(html).toContain(`href="https://kinderwell.app/k/${KEY}"`);
+});
+
+test('Apple’s association file is JSON, unredirected, and claims /k/* for the app', async ({ request }) => {
+  const res = await request.get('/.well-known/apple-app-site-association', { maxRedirects: 0 });
+  expect(res.status()).toBe(200);
+  expect(res.headers()['content-type']).toContain('application/json');
+  const body = await res.json();
+  expect(body.applinks.details[0].appIDs).toContain('8B52Q4QNLH.com.kinderwell.app');
+  expect(body.applinks.details[0].components[0]['/']).toBe('/k/*');
+});

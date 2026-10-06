@@ -3,6 +3,14 @@ import { fileURLToPath } from 'node:url';
 
 const AD_PARAMS = ['a', 'fbclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
 
+// SPEC-21: the host of the app's sign-in links. It serves only the link page
+// (/k/<key>) and Apple's association file; everything else goes to the main
+// site, so the funnel never runs on a second origin (its own localStorage,
+// its own pixel cookies). Must match lib/link-page.ts and the app's
+// associatedDomains.
+const HANDOFF_HOST = 'open.kinderwell.app';
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://kinderwell.app';
+
 const NOINDEX = [
   '/quiz/:path*',
   '/email',
@@ -47,12 +55,20 @@ const nextConfig = {
   // message-matched ad landing. Doing it here (query string is carried over)
   // keeps / static and edge-cached instead of a server render per hit.
   async redirects() {
-    return AD_PARAMS.map((key) => ({
-      source: '/',
-      has: [{ type: 'query', key }],
-      destination: '/start',
-      permanent: false,
-    }));
+    return [
+      {
+        source: '/:path((?!k/|\\.well-known/).*)',
+        has: [{ type: 'host', value: HANDOFF_HOST }],
+        destination: `${SITE_URL}/:path`,
+        permanent: false,
+      },
+      ...AD_PARAMS.map((key) => ({
+        source: '/',
+        has: [{ type: 'query', key }],
+        destination: '/start',
+        permanent: false,
+      })),
+    ];
   },
 
   // Baseline security headers. The Content-Security-Policy is REPORT-ONLY
@@ -74,8 +90,14 @@ const nextConfig = {
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-          { key: 'Content-Security-Policy-Report-Only', value: CSP },
         ],
+      },
+      // Every page except the sign-in link page (/k/<key>), which enforces a
+      // strict policy of its own and must never report: a report carries the
+      // page's URL, and that URL holds a login credential (SPEC-21).
+      {
+        source: '/:path((?!k/).*)',
+        headers: [{ key: 'Content-Security-Policy-Report-Only', value: CSP }],
       },
       // Mid-funnel pages mean nothing out of context ("Payment confirmed" to
       // someone from Google). Only /, /start and /legal/* are indexable.
@@ -83,6 +105,18 @@ const nextConfig = {
         source,
         headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
       })),
+      // The link page's URL holds a sign-in key: it must never be sent on as
+      // a Referer, and no search engine may keep it. Listed after the
+      // baseline so these replace its values (a rule listed later wins); the
+      // route sends the same, with its own CSP and no-store. Not in NOINDEX:
+      // that rule's value would drop noarchive.
+      {
+        source: '/k/:path*',
+        headers: [
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+          { key: 'X-Robots-Tag', value: 'noindex, nofollow, noarchive' },
+        ],
+      },
     ];
   },
 };

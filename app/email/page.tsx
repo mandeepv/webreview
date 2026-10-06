@@ -12,7 +12,7 @@ import {
 import { config } from '@/lib/config';
 import { getSession, readMetaCookies, save } from '@/lib/session';
 import { identify, track } from '@/lib/analytics';
-import { pixel, setPixelUserData } from '@/lib/meta';
+import { leadEventId, pixel, setPixelUserData } from '@/lib/meta';
 import { EMAIL_POSITION, JOURNEY_LENGTH } from '@/lib/quiz/questions';
 
 // The recoverability watershed: this step creates the Supabase account the
@@ -80,7 +80,7 @@ export default function EmailPage() {
       // User data BEFORE the Lead so this event (and every later one) carries it.
       await setPixelUserData(email, userId);
       // Same event id as capture-email's server-side Lead → Meta keeps one (P2-2).
-      pixel('Lead', {}, `lead-${s.id}`);
+      pixel('Lead', {}, await leadEventId(s.id));
       // replace: back from /plan must not land on the build screen again (P2-7b).
       router.replace('/building');
     } catch {

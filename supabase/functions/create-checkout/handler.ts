@@ -12,6 +12,8 @@
 //   * threads { supabase_user_id, funnel_session_id, event_id } through Dodo
 //     metadata — the webhook resolves the buyer with zero inference
 //   * stores fbp/fbc/ip/ua so the webhook can fire a well-matched CAPI Purchase
+//   * stores the sha256 of the browser's handoff nonce, which is what later
+//     lets /welcome mint a sign-in link for this buyer (mint-handoff, SPEC-21)
 //
 // Secrets (supabase secrets set): DODO_API_KEY, DODO_ENV (test|live),
 // DODO_PRODUCT_ANNUAL, DODO_PRODUCT_MONTHLY, SITE_URL,
@@ -22,6 +24,7 @@ import { isFromProxy } from '../_shared/email.ts';
 import { DODO_BASE, fetchProductPrice } from '../_shared/dodo.ts';
 import { alertOwner } from '../_shared/email.ts';
 import { hasAccess } from '../_shared/entitlement.ts';
+import { KEY_RE, sha256Hex } from '../_shared/handoff.ts';
 import { afterResponse, sendCapiEvent } from '../_shared/meta.ts';
 import { isRateLimited } from '../_shared/ratelimit.ts';
 
@@ -54,6 +57,7 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
     plan?: 'annual' | 'monthly';
     displayedPrice?: number;
     meta?: { fbp?: string; fbc?: string };
+    handoffNonce?: unknown;
     client_ip?: string;
     client_ua?: string;
   };
@@ -101,6 +105,14 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
     .maybeSingle();
   if (hasAccess(existing, new Date())) {
     return json({ error: 'already_subscribed' }, 409);
+  }
+
+  // Only past the guard above: once the purchase has landed, no caller can
+  // swap in a nonce of their own. Before it, the browser that last opened
+  // checkout wins, which is the one about to pay. Optional, so a page loaded
+  // before this shipped still checks out (it just gets no handoff link).
+  if (typeof body.handoffNonce === 'string' && KEY_RE.test(body.handoffNonce)) {
+    await saveHandoffNonce(session.id, await sha256Hex(body.handoffNonce));
   }
 
   // Reuse a checkout created moments ago for this session + plan. Covers the
@@ -244,6 +256,19 @@ export class PriceGuard {
     }
     return mismatch;
   }
+}
+
+/**
+ * Its own write, separate from the CAPI keys: if it fails (say the
+ * handoff_keys migration isn't applied yet) only the handoff link is lost —
+ * checkout and attribution carry on, and the email code still signs them in.
+ */
+async function saveHandoffNonce(sessionId: string, nonceHash: string) {
+  const { error } = await admin
+    .from('funnel_sessions')
+    .update({ handoff_nonce_hash: nonceHash })
+    .eq('id', sessionId);
+  if (error) console.error('handoff nonce save failed', error.message);
 }
 
 function json(payload: unknown, status = 200): Response {

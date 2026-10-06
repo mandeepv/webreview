@@ -1,12 +1,14 @@
-// CI coverage gate (spec work item 7): the two handlers that decide who has
-// paid and what they are charged must keep ≥ 80% line coverage from the
-// integration tests. Everything else is reported, not enforced (yet).
+// CI coverage gate (spec work item 7): the handlers that decide who has paid,
+// what they are charged, and who gets a sign-in link (mint-handoff, SPEC-21)
+// must keep ≥ 80% line coverage from the integration tests. Everything else
+// is reported, not enforced (yet).
 //
 //   deno run --allow-read supabase/functions/_testing/check_coverage.ts coverage.lcov
 
 const GATED: Record<string, number> = {
   'supabase/functions/dodo-webhook/handler.ts': 80,
   'supabase/functions/create-checkout/handler.ts': 80,
+  'supabase/functions/mint-handoff/handler.ts': 80,
 };
 
 const lcov = await Deno.readTextFile(Deno.args[0] ?? 'coverage.lcov');
