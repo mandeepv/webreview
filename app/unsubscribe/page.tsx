@@ -1,43 +1,20 @@
-'use client';
+import { redirect } from 'next/navigation';
+import UnsubscribeClient from './unsubscribe-client';
 
-import { useEffect, useState } from 'react';
-import { RichHeadline, Shell } from '@/components/ui';
-
-// The link in every marketing email's footer. The opt-out is recorded on
-// arrival — "unsubscribe in one tap" is promised at email capture, so no
-// second confirmation screen.
-export default function UnsubscribePage() {
-  const [state, setState] = useState<'working' | 'done' | 'failed'>('working');
-
-  useEffect(() => {
-    fetch(`/api/unsubscribe${window.location.search}`, { method: 'POST' })
-      .then((res) => setState(res.ok ? 'done' : 'failed'))
-      .catch(() => setState('failed'));
-  }, []);
-
-  return (
-    <Shell>
-      <div className="flex flex-1 flex-col justify-center py-10">
-        {state === 'working' ? (
-          <p className="text-[16px] text-ink/60">One moment…</p>
-        ) : state === 'done' ? (
-          <>
-            <RichHeadline>You’re *unsubscribed*.</RichHeadline>
-            <p className="mt-4 text-[16px] leading-[1.6] text-ink/70">
-              We won’t send you any more reminder emails. If you have a subscription, you’ll still
-              get receipts and account messages about it.
-            </p>
-          </>
-        ) : (
-          <>
-            <RichHeadline>That link *didn’t work*.</RichHeadline>
-            <p className="mt-4 text-[16px] leading-[1.6] text-ink/70">
-              Reply to any of our emails, or write to hello@kinderwell.app, and we’ll remove you
-              by hand.
-            </p>
-          </>
-        )}
-      </div>
-    </Shell>
-  );
+// Older emails link here with ?u=&t= in the URL. Hand them to /u on the
+// server — before any HTML, so before the pixel snippet can send this URL
+// to Meta (app/u/route.ts says why).
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const { u, t } = await searchParams;
+  if (u !== undefined || t !== undefined) {
+    const qs = new URLSearchParams();
+    if (typeof u === 'string') qs.set('u', u);
+    if (typeof t === 'string') qs.set('t', t);
+    redirect(`/u?${qs.toString()}`);
+  }
+  return <UnsubscribeClient />;
 }

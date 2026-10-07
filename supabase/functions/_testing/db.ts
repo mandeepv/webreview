@@ -47,6 +47,7 @@ export type EntitlementRow = {
   activated_at: string | null;
   nudge_stage: number;
   last_event_at: string | null;
+  updated_at: string;
 };
 
 export async function entitlement(userId: string): Promise<EntitlementRow | null> {

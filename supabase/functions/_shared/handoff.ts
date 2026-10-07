@@ -15,6 +15,7 @@
 // them the same day, or not at all.
 
 import type { SupabaseClient } from 'npm:@supabase/supabase-js@2';
+import { accountPredatesSession } from './accounts.ts';
 import { timingSafeEqual } from './email.ts';
 import { hasAccess } from './entitlement.ts';
 
@@ -78,19 +79,32 @@ export type MintDecision = 'ok' | 'not_found' | 'not_ready' | 'expired' | 'not_e
  * unit-tested (handoff_test.ts); mint-handoff does the I/O.
  *
  * `not_found` covers "no such session" AND "wrong nonce" alike, so the
- * answer never tells a guesser which half was right.
+ * answer never tells a guesser which half was right. It also covers a
+ * purchase that landed on an account older than the session (B-1): whoever
+ * paid may not be the account's owner, so only the owner's inbox may sign
+ * them in. `account_created_at` is only read once the purchase has landed,
+ * so callers may leave it null until then.
  */
 export function decideMint(
-  session: { user_id: string | null; handoff_nonce_hash: string | null; purchased_at: string | null } | null,
+  session: {
+    user_id: string | null;
+    handoff_nonce_hash: string | null;
+    purchased_at: string | null;
+    created_at: string | null;
+    account_created_at: string | null;
+  } | null,
   nonceHash: string,
   entitlement: { status: string; current_period_end: string | null } | null,
   now: Date
 ): MintDecision {
-  if (!session?.user_id || !session.handoff_nonce_hash) return 'not_found';
-  if (!timingSafeEqual(session.handoff_nonce_hash, nonceHash)) return 'not_found';
+  if (!session?.user_id) return 'not_found';
   // purchased_at is written by dodo-webhook at first activation, after the
-  // entitlement. The page usually asks before the webhook lands: retry.
+  // entitlement and after the paid checkout's nonce hash (B-3: the hash is
+  // bound to the checkout, so the session has none until then). The page
+  // usually asks before the webhook lands: retry.
   if (!session.purchased_at) return 'not_ready';
+  if (!session.handoff_nonce_hash || !timingSafeEqual(session.handoff_nonce_hash, nonceHash)) return 'not_found';
+  if (accountPredatesSession(session.account_created_at, session.created_at)) return 'not_found';
   if (now.getTime() - new Date(session.purchased_at).getTime() > MINT_WINDOW_MS) return 'expired';
   // A refund or chargeback since: no session for a buyer who no longer pays.
   if (!hasAccess(entitlement, now)) return 'not_entitled';

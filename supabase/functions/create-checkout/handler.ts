@@ -12,12 +12,14 @@
 //   * threads { supabase_user_id, funnel_session_id, event_id } through Dodo
 //     metadata — the webhook resolves the buyer with zero inference
 //   * stores fbp/fbc/ip/ua so the webhook can fire a well-matched CAPI Purchase
-//   * stores the sha256 of the browser's handoff nonce, which is what later
-//     lets /welcome mint a sign-in link for this buyer (mint-handoff, SPEC-21)
+//   * binds the sha256 of the browser's handoff nonce to THIS checkout (in its
+//     Dodo metadata); the webhook copies the paid checkout's hash onto the
+//     funnel session, which is what later lets that browser's /welcome mint a
+//     sign-in link (mint-handoff, SPEC-21)
 //
 // Secrets (supabase secrets set): DODO_API_KEY, DODO_ENV (test|live),
-// DODO_PRODUCT_ANNUAL, DODO_PRODUCT_MONTHLY, SITE_URL,
-// FUNNEL_PROXY_SECRET (required in live mode)
+// DODO_PRODUCT_ANNUAL, DODO_PRODUCT_MONTHLY, SITE_URL, PRICE_ANNUAL,
+// PRICE_MONTHLY (the InitiateCheckout value), FUNNEL_PROXY_SECRET (required)
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { isFromProxy } from '../_shared/email.ts';
@@ -26,7 +28,7 @@ import { alertOwner } from '../_shared/email.ts';
 import { hasAccess } from '../_shared/entitlement.ts';
 import { KEY_RE, sha256Hex } from '../_shared/handoff.ts';
 import { afterResponse, sendCapiEvent } from '../_shared/meta.ts';
-import { isRateLimited } from '../_shared/ratelimit.ts';
+import { ipBucket, isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -69,11 +71,17 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
 
   const plan = body.plan === 'monthly' ? 'monthly' : 'annual';
   if (!body.sessionId || !UUID_RE.test(body.sessionId)) return json({ error: 'missing_session' }, 400);
+  // Required (IN-7): leaving it out used to skip the price guard below. The
+  // offer page has always sent it, so only a hand-made request lacks it.
+  if (typeof body.displayedPrice !== 'number' || !Number.isFinite(body.displayedPrice)) {
+    return json({ error: 'missing_price' }, 400);
+  }
+  const displayedPrice = body.displayedPrice;
 
   // Every call can create a Dodo session under our API key (P1-7).
   if (
     await isRateLimited(admin, [
-      { key: `cc:ip:${body.client_ip ?? ''}`, windowSeconds: 60, max: 20 },
+      { key: `cc:ip:${ipBucket(body.client_ip)}`, windowSeconds: 60, max: 20 },
       { key: `cc:session:${body.sessionId}`, windowSeconds: 600, max: 10 },
     ])
   ) {
@@ -107,26 +115,39 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
     return json({ error: 'already_subscribed' }, 409);
   }
 
-  // Only past the guard above: once the purchase has landed, no caller can
-  // swap in a nonce of their own. Before it, the browser that last opened
-  // checkout wins, which is the one about to pay. Optional, so a page loaded
-  // before this shipped still checks out (it just gets no handoff link).
-  if (typeof body.handoffNonce === 'string' && KEY_RE.test(body.handoffNonce)) {
-    await saveHandoffNonce(session.id, await sha256Hex(body.handoffNonce));
-  }
+  // The handoff nonce is bound to the CHECKOUT, not the session (review
+  // 2026-10-07, B-3). Its hash rides in this checkout's Dodo metadata, and
+  // the webhook copies the PAID checkout's hash onto the funnel session at
+  // first activation: the nonce that mints is the one from the browser that
+  // created the checkout that was paid. It used to be written onto the
+  // session by every call, last writer wins — and the session id is not a
+  // secret (resume links, Dodo metadata), so anyone holding it could post
+  // their own nonce before the buyer paid and mint the buyer's sign-in.
+  // Optional, so a page loaded before SPEC-21 still checks out (it just gets
+  // no handoff link).
+  const nonceHash =
+    typeof body.handoffNonce === 'string' && KEY_RE.test(body.handoffNonce)
+      ? await sha256Hex(body.handoffNonce)
+      : null;
 
-  // Reuse a checkout created moments ago for this session + plan. Covers the
-  // double-tap, the back button after paying, and a failed redirect to
-  // /welcome: Dodo won't take a second payment on a completed session, so
-  // the buyer can't be charged twice while the webhook is in flight.
-  const prior = (session.capi as Record<string, string> | null) ?? {};
+  // Reuse a checkout created moments ago for this session + plan, by this
+  // same browser (same nonce). Covers the double-tap, the back button after
+  // paying, and a failed redirect to /welcome: Dodo won't take a second
+  // payment on a completed session, so the buyer can't be charged twice
+  // while the webhook is in flight. Another browser resuming the session
+  // (the "open in Safari" link) gets a checkout of its own, carrying its own
+  // nonce; should both be paid, the webhook's duplicate guard cancels one.
+  // One remembered checkout PER PLAN (IN-7): with only the latest kept,
+  // annual → monthly → annual minted a third checkout instead of handing
+  // back the first.
+  const priorCapi = (session.capi as Record<string, unknown> | null) ?? {};
+  const prior = rememberedCheckout(priorCapi, plan);
   if (
-    prior.checkout_url &&
-    prior.plan === plan &&
-    prior.checkout_created_at &&
-    Date.now() - new Date(prior.checkout_created_at).getTime() < REUSE_CHECKOUT_MS
+    prior &&
+    Date.now() - new Date(prior.created_at).getTime() < REUSE_CHECKOUT_MS &&
+    (prior.nonce_hash || null) === nonceHash
   ) {
-    return json({ checkoutUrl: prior.checkout_url, eventId: prior.event_id });
+    return json({ checkoutUrl: prior.url, eventId: prior.event_id });
   }
 
   const productId =
@@ -138,10 +159,7 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
   // The page's price comes from Vercel env vars; the charge comes from the
   // Dodo product. If they've drifted, charging would be billing a price the
   // buyer wasn't shown — refuse and tell the owner (P1-11).
-  if (typeof body.displayedPrice === 'number') {
-    const mismatch = await priceGuard.mismatch(productId, plan, body.displayedPrice);
-    if (mismatch) return json({ error: 'price_mismatch' }, 409);
-  }
+  if (await priceGuard.mismatch(productId, plan, displayedPrice)) return json({ error: 'price_mismatch' }, 409);
 
   // One event_id for BOTH the browser Purchase pixel (returned to the client)
   // and the webhook's CAPI Purchase — Meta dedups the pair into one.
@@ -162,6 +180,8 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
         funnel_session_id: session.id,
         event_id: eventId,
         plan,
+        // A hash, never the nonce: Dodo can't mint with it.
+        ...(nonceHash ? { handoff_nonce_hash: nonceHash } : {}),
       },
       // Apple Pay front and center for iOS Safari; credit/debit as the
       // required fallback per Dodo's docs.
@@ -180,17 +200,28 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
   }
   const checkout = (await checkoutRes.json()) as { session_id: string; checkout_url: string };
 
-  // Persist CAPI match keys + event id for the webhook.
+  // Persist CAPI match keys + event id for the webhook, and this checkout
+  // for the reuse rule above.
+  const createdAt = new Date().toISOString();
+  const remembered: RememberedCheckout = {
+    url: checkout.checkout_url,
+    event_id: eventId,
+    created_at: createdAt,
+    // Which browser this checkout belongs to.
+    nonce_hash: nonceHash ?? '',
+  };
   const capi = {
-    ...((session.capi as Record<string, string>) ?? {}),
+    ...priorCapi,
     fbp: body.meta?.fbp ?? '',
     fbc: body.meta?.fbc ?? '',
     ip: body.client_ip ?? '',
     ua: body.client_ua ?? '',
+    // The latest checkout, flat: fireCapiPurchase's fallback event id.
     event_id: eventId,
     plan,
     checkout_url: checkout.checkout_url,
-    checkout_created_at: new Date().toISOString(),
+    checkout_created_at: createdAt,
+    checkouts: { ...((priorCapi.checkouts as Record<string, RememberedCheckout> | undefined) ?? {}), [plan]: remembered },
   };
   const { error: saveError } = await admin
     .from('funnel_sessions')
@@ -217,14 +248,37 @@ async function handle(req: Request, priceGuard: PriceGuard): Promise<Response> {
         ip: capi.ip,
         ua: capi.ua,
       },
-      customData: {
-        value: typeof body.displayedPrice === 'number' ? body.displayedPrice : Number(Deno.env.get(plan === 'monthly' ? 'PRICE_MONTHLY' : 'PRICE_ANNUAL') ?? 0),
-        currency: 'USD',
-      },
+      // The server's price, never a number from the request body (IN-7):
+      // ad optimisation must not be steerable from the browser. The price
+      // guard has just checked the page showed the same.
+      customData: { value: configuredPrice(plan), currency: 'USD' },
     })
   );
 
   return json({ checkoutUrl: checkout.checkout_url, eventId });
+}
+
+type RememberedCheckout = { url: string; event_id: string; created_at: string; nonce_hash: string };
+
+/** The checkout this session last created for `plan`, from funnel_sessions.capi. */
+function rememberedCheckout(capi: Record<string, unknown>, plan: string): RememberedCheckout | null {
+  const entry = (capi.checkouts as Record<string, RememberedCheckout> | undefined)?.[plan];
+  if (entry?.url && entry.created_at) return entry;
+  // Rows written before per-plan memory: the flat latest checkout.
+  if (typeof capi.checkout_url === 'string' && capi.plan === plan && typeof capi.checkout_created_at === 'string') {
+    return {
+      url: capi.checkout_url,
+      event_id: String(capi.event_id ?? ''),
+      created_at: capi.checkout_created_at,
+      nonce_hash: String(capi.handoff_nonce_hash ?? ''),
+    };
+  }
+  return null;
+}
+
+/** The plan's price as configured on the server (PRICE_ANNUAL / PRICE_MONTHLY), in dollars. */
+function configuredPrice(plan: 'annual' | 'monthly'): number {
+  return Number(Deno.env.get(plan === 'monthly' ? 'PRICE_MONTHLY' : 'PRICE_ANNUAL') ?? (plan === 'monthly' ? '12.99' : '59.99'));
 }
 
 /**
@@ -256,19 +310,6 @@ export class PriceGuard {
     }
     return mismatch;
   }
-}
-
-/**
- * Its own write, separate from the CAPI keys: if it fails (say the
- * handoff_keys migration isn't applied yet) only the handoff link is lost —
- * checkout and attribution carry on, and the email code still signs them in.
- */
-async function saveHandoffNonce(sessionId: string, nonceHash: string) {
-  const { error } = await admin
-    .from('funnel_sessions')
-    .update({ handoff_nonce_hash: nonceHash })
-    .eq('id', sessionId);
-  if (error) console.error('handoff nonce save failed', error.message);
 }
 
 function json(payload: unknown, status = 200): Response {

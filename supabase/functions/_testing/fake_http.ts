@@ -56,6 +56,9 @@ export class FakeHttp {
     this.on('POST', HOSTS.posthog, /^\/capture\/$/, () => json({ status: 1 }));
     this.on('PATCH', HOSTS.dodo, /^\/subscriptions\/[^/]+$/, () => json({}));
     this.on('GET', HOSTS.dodo, /^\/payments\/[^/]+$/, () => json({ message: 'not found' }, 404));
+    // Rows other tests leave behind reach the sweep's reconcile too: a clear
+    // "no such subscription", not an outage (which pauses expiry, MP-3).
+    this.on('GET', HOSTS.dodo, /^\/subscriptions\/[^/]+$/, () => json({ message: 'not found' }, 404));
   }
 
   /** Register a stub. Later registrations win over earlier ones (so tests override defaults). */

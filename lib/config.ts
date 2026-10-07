@@ -16,12 +16,21 @@ function required(name: string, value: string | undefined): string {
   return value;
 }
 
-function portalUrl(): string {
-  if (process.env.NEXT_PUBLIC_DODO_PORTAL_URL) return process.env.NEXT_PUBLIC_DODO_PORTAL_URL;
-  const businessId = process.env.NEXT_PUBLIC_DODO_BUSINESS_ID;
-  if (!businessId) return 'https://customer.dodopayments.com';
-  const host = process.env.NEXT_PUBLIC_DODO_ENV === 'live' ? 'customer.dodopayments.com' : 'test.customer.dodopayments.com';
-  return `https://${host}/login/${encodeURIComponent(businessId)}`;
+/**
+ * Where /manage sends subscribers. The TEST portal only when the build says
+ * so explicitly (NEXT_PUBLIC_DODO_ENV=test, as CI and local dev do); anything
+ * else — including the variable never being set — is the live portal. It
+ * used to be the other way round, so setting the business id at go-live and
+ * forgetting NEXT_PUBLIC_DODO_ENV=live sent paying customers to Dodo's test
+ * portal from every "cancel at kinderwell.app/manage" we print (review
+ * 2026-10-07, B-10). The go-live check: `curl -sI https://kinderwell.app/manage`
+ * → Location on customer.dodopayments.com, not test.customer….
+ */
+export function portalUrlFrom(env: { portalUrl?: string; businessId?: string; dodoEnv?: string }): string {
+  if (env.portalUrl) return env.portalUrl;
+  if (!env.businessId) return 'https://customer.dodopayments.com';
+  const host = env.dodoEnv === 'test' ? 'test.customer.dodopayments.com' : 'customer.dodopayments.com';
+  return `https://${host}/login/${encodeURIComponent(env.businessId)}`;
 }
 
 export const config = {
@@ -43,10 +52,14 @@ export const config = {
 
   // Where /manage sends subscribers to cancel or update payment. Preference:
   // an explicit URL; else Dodo's business-specific login (documented as
-  // customer.dodopayments.com/login/<business_id>, test.customer… in test
-  // mode); else Dodo's Unified Customer Portal, which also works but lists
-  // every Dodo merchant the buyer uses (review P1-1).
-  dodoPortalUrl: portalUrl(),
+  // customer.dodopayments.com/login/<business_id>, test.customer… only with
+  // NEXT_PUBLIC_DODO_ENV=test); else Dodo's Unified Customer Portal, which
+  // also works but lists every Dodo merchant the buyer uses (review P1-1).
+  dodoPortalUrl: portalUrlFrom({
+    portalUrl: process.env.NEXT_PUBLIC_DODO_PORTAL_URL,
+    businessId: process.env.NEXT_PUBLIC_DODO_BUSINESS_ID,
+    dodoEnv: process.env.NEXT_PUBLIC_DODO_ENV,
+  }),
 
   // Preview-only "skip" buttons on /email and /offer. On in local dev; on a
   // deployed build only while NEXT_PUBLIC_DEV_SKIP=1 AND checkout is in test
@@ -60,6 +73,18 @@ export const config = {
   posthogHost: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://us.i.posthog.com',
   metaPixelId: process.env.NEXT_PUBLIC_META_PIXEL_ID ?? '',
 } as const;
+
+/**
+ * 'dev' | 'prod' | 'unknown', from the Supabase project the build talks to —
+ * the same rule as the app's src/lib/env.ts, so web and app events carry the
+ * same `environment` (lib/analytics.ts, XR-7).
+ */
+export function environmentFor(supabaseUrl: string): 'dev' | 'prod' | 'unknown' {
+  if (supabaseUrl.includes('<PROD_PROJECT_REF>')) return 'prod';
+  if (supabaseUrl.includes('<DEV_PROJECT_REF>')) return 'dev';
+  return 'unknown';
+}
+export const supabaseEnvironment = environmentFor(config.supabaseUrl);
 
 export const perWeekAnnual = (config.priceAnnual / 52).toFixed(2);
 // Per-day is the primary price display on the offer page — the consistently

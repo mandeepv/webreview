@@ -7,7 +7,7 @@ export default function Terms() {
     <Shell>
       <article className="flex-1 py-8 text-[15px] leading-[1.65] text-ink/75">
         <h1 className="font-serif text-[28px] text-ink">Terms of Service</h1>
-        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: September 30, 2026</p>
+        <p className="mt-2 font-mono text-[11px] uppercase tracking-wide text-ink/45">Last updated: October 7, 2026</p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">The service</h2>
         <p className="mt-2 leading-relaxed">
@@ -15,6 +15,9 @@ export default function Terms() {
           educational content, not medical, psychological, or therapeutic advice, and does not
           diagnose or treat any condition.
         </p>
+
+        <h2 className="mt-6 font-serif text-[19px] text-ink">Eligibility</h2>
+        <p className="mt-2 leading-relaxed">You must be 18 or older to use Kinderwell.</p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">Subscriptions purchased on this site</h2>
         <p className="mt-2 leading-relaxed">
@@ -39,6 +42,15 @@ export default function Terms() {
         <p className="mt-2 leading-relaxed">
           Your email creates a Kinderwell account used to deliver your subscription in the app.
           Keep access to that email; it is how your purchase is recognized.
+        </p>
+
+        <h2 className="mt-6 font-serif text-[19px] text-ink">Disclaimer and limitation of liability</h2>
+        <p className="mt-2 leading-relaxed">
+          Kinderwell is provided “as is”, without warranties of any kind, and does not guarantee any
+          particular outcome. To the maximum extent permitted by law, we are not liable for indirect,
+          incidental or consequential damages, and our total liability to you is limited to the lesser
+          of the amount you paid us in the 12 months before the claim or $100. You are responsible for
+          your parenting decisions.
         </p>
 
         <h2 className="mt-6 font-serif text-[19px] text-ink">Governing law</h2>

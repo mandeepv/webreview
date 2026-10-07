@@ -18,3 +18,18 @@ export const VARIANTS: Record<string, { headline: string; sub: string }> = {
     sub: 'Science-based lessons that give you the words before you lose them.',
   },
 };
+
+export type VariantKey = string;
+
+/**
+ * The variant for an ?a= value, or 'default'. An OWN key only: a plain
+ * VARIANTS[a] lookup found Object.prototype for ?a=__proto__ (likewise
+ * constructor, toString, valueOf), which is truthy, has no headline, and
+ * crashed the server render — a 500 on the page every ad lands on (review
+ * 2026-10-07, B-7). hasOwnProperty.call rather than Object.hasOwn: the
+ * landing also resolves this in the browser, and Object.hasOwn is missing
+ * before iOS 15.4.
+ */
+export function variantKeyFor(a: unknown): VariantKey {
+  return typeof a === 'string' && Object.prototype.hasOwnProperty.call(VARIANTS, a) ? a : 'default';
+}

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { identify, initAnalytics } from '@/lib/analytics';
+import { consumePendingReset, identify, initAnalytics } from '@/lib/analytics';
 import { pixel, setPixelUserData, whenPixelReady } from '@/lib/meta';
 import { getSession } from '@/lib/session';
 
@@ -12,6 +12,8 @@ export default function AnalyticsBoot() {
 
   useEffect(() => {
     initAnalytics();
+    // A purchase on this device asked to forget the buyer before the next run (FE-5).
+    consumePendingReset(window.location.pathname);
     // A returning visitor (e.g. from a win-back email) already gave us their
     // email — re-attach it so this visit's events keep their match quality.
     // The pixel snippet loads afterInteractive, so wait until fbq exists.
@@ -33,6 +35,7 @@ export default function AnalyticsBoot() {
       firstRender.current = false;
       return;
     }
+    consumePendingReset(pathname);
     pixel('PageView');
   }, [pathname]);
 

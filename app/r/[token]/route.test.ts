@@ -78,4 +78,14 @@ describe('/r/[token]', () => {
     const res = await open('t', '', 'http://localhost:3000');
     expect(res.cookies.get(RESUME_COOKIE)!.secure).toBe(false);
   });
+
+  it('answers too long for a cookie are left out rather than losing the whole hand-over (P3)', async () => {
+    const answers = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`q${i}`, 'x'.repeat(80)]));
+    resolved({ ...SESSION, answers });
+    const res = await open('good-token');
+    const value = res.cookies.get(RESUME_COOKIE)!.value;
+    expect(value.length).toBeLessThanOrEqual(3500);
+    const handed = JSON.parse(Buffer.from(value, 'base64url').toString());
+    expect(handed).toMatchObject({ sessionId: SESSION.sessionId, userId: SESSION.userId, email: SESSION.email, answers: {} });
+  });
 });

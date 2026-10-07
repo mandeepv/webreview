@@ -29,3 +29,22 @@ export async function isRateLimited(admin: SupabaseClient, limits: Limit[]): Pro
   );
   return results.some(Boolean);
 }
+
+/**
+ * The rate-limit bucket for a client address: IPv4 as it is, IPv6 by its
+ * /64. Mobile carriers give each phone a whole /64, so a key per IPv6
+ * address handed one person 2^64 fresh buckets (review 2026-10-07, IN-7).
+ * Anything that doesn't parse as plain IPv6 is kept as it is.
+ */
+export function ipBucket(ip: string | null | undefined): string {
+  const v = (ip ?? '').trim().toLowerCase();
+  if (!v.includes(':') || v.includes('.')) return v; // IPv4, v4-mapped, or not an address
+  const parts = v.split('::');
+  if (parts.length > 2) return v;
+  const head = parts[0] ? parts[0].split(':') : [];
+  const tail = parts.length === 2 && parts[1] ? parts[1].split(':') : [];
+  const groups =
+    parts.length === 2 ? [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail] : head;
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return v;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}

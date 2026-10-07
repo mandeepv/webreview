@@ -6,15 +6,16 @@
 //
 // Served on every host: open.kinderwell.app (the links we hand out) and
 // kinderwell.app (the link page's "Open Kinderwell", lib/link-page.ts).
-// Team 8B52Q4QNLH is the account the app was transferred to (2026-08-21);
-// the bundle ids are the store app and the dev build. The app's side of the
+// Team 8B52Q4QNLH is the account the app was transferred to (2026-08-21).
+// One bundle id: dev builds use com.kinderwell.app too (the app's eas.json;
+// the .dev bundle was retired with the bundle split). The app's side of the
 // pair is associatedDomains: applinks:open.kinderwell.app and
 // applinks:kinderwell.app (app.config.js).
 export const AASA = {
   applinks: {
     details: [
       {
-        appIDs: ['8B52Q4QNLH.com.kinderwell.app', '8B52Q4QNLH.com.kinderwell.app.dev'],
+        appIDs: ['8B52Q4QNLH.com.kinderwell.app'],
         components: [{ '/': '/k/*', comment: 'SPEC-21 one-time sign-in links' }],
       },
     ],

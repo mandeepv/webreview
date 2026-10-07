@@ -5,14 +5,14 @@ import { Eyebrow, LegalFooter, PrimaryButton, RichHeadline, Shell } from '@/comp
 import { captureAttribution, getSession, save } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { pixel } from '@/lib/meta';
-import { VARIANTS } from './variants';
+import { VARIANTS, variantKeyFor } from './variants';
 
 // variantKey is resolved on the server (page.tsx) so the landing copy is in
 // the first HTML response. Reading it with useSearchParams here would make
 // the whole page client-rendered: a blank screen until the JS arrives, on the
 // one page every ad dollar lands on (P1-13).
 export default function Landing({ variantKey }: { variantKey: string }) {
-  const v = VARIANTS[variantKey] ?? VARIANTS.default;
+  const v = VARIANTS[variantKeyFor(variantKey)];
 
   useEffect(() => {
     captureAttribution(new URLSearchParams(window.location.search));

@@ -12,15 +12,17 @@ vi.mock('@/lib/checkout', () => ({
   openOverlayCheckout: vi.fn(),
   closeOverlayCheckout: vi.fn(),
 }));
-const session = { id: 'session-1', emailCaptured: true, answers: { name: 'Sam', goals: ['closer_bond'] } };
+const session = { id: 'session-1', emailCaptured: true, email: 'parent@example.com', answers: { name: 'Sam', goals: ['closer_bond'] } };
 vi.mock('@/lib/session', () => ({
   getSession: () => session,
   readMetaCookies: () => ({ fbp: 'fb.1.1.111' }),
+  resetSession: vi.fn(),
   save: vi.fn(),
 }));
 
 import OfferPage from './page';
 import { closeOverlayCheckout, openOverlayCheckout } from '@/lib/checkout';
+import { resetSession } from '@/lib/session';
 import { pixel } from '@/lib/meta';
 
 const IPHONE_SAFARI =
@@ -58,9 +60,22 @@ async function tapGetMyPlan() {
 }
 
 describe('/offer', () => {
-  it('someone who never reached the offer through the quiz is sent to the start', () => {
+  it('a browser with no session gets a card saying where the plan is, not a silent restart (FE-7)', () => {
     session.emailCaptured = false;
     render(<OfferPage />);
+    expect(replace).not.toHaveBeenCalled();
+    expect(screen.getByText(/just not in this browser/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Start again' }).getAttribute('href')).toBe('/start');
+    expect(screen.queryByRole('button', { name: 'Get my plan' })).toBeNull();
+  });
+
+  it('shows whose plan it is, and "Not you?" starts over (IN-6)', async () => {
+    render(<OfferPage />);
+    expect(screen.getByText('parent@example.com')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Not you?' }));
+    });
+    expect(resetSession).toHaveBeenCalled();
     expect(replace).toHaveBeenCalledWith('/start');
   });
 

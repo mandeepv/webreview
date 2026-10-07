@@ -19,13 +19,13 @@ there too when prod goes live).
 | Domain | ✅ live | `kinderwell.app`, Namecheap, auto-renew ON, WhoisGuard ON |
 | DNS | ✅ live | Single A record `@` → `216.198.79.1` (Vercel). Namecheap BasicDNS. Parking page OFF, domain redirect REMOVED. |
 | Hosting | ✅ live | Vercel project `kinderwell-web`, GitHub `mandeepv/kinderwell-web` (private), auto-deploys from `main` |
-| Supabase (dev) | ⚠️ behind code | `<DEV_PROJECT_REF>` (kinderwell-dev) — only migration `…0918_web2app` applied and the 4 original functions deployed (**Sep 19 versions**). **Not applied:** `…0928_email_opt_outs`, `…0930_webhook_hardening`, `…1005_event_ordering`, and SPEC-21's `…1006_handoff_keys`. **Not set:** `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` (both now required). **Not deployed:** new code for all 7 functions (`capture-email`, `create-checkout`, `dodo-webhook`, `winback-sweep`, plus new `unsubscribe` and `resume`, and SPEC-21's new `mint-handoff`). Order and steps: MANUAL_STEPS §8.6 → §8.7. Deploy from `main` (everything is merged since 2026-10-07) with `scripts/deploy-functions.sh`: that code also carries the 2026-10-05 work: the buyer's app profile at first purchase, server-side Meta Lead/InitiateCheckout, event ordering, retention, and two bug fixes (§3). |
+| Supabase (dev) | ⚠️ behind code | `<DEV_PROJECT_REF>` (kinderwell-dev). **Migrations: all five web migrations ARE applied** (`supabase migration list`, checked 2026-10-07 — this row used to say only `…0918`; the app's OPS_STATE was right). **Functions:** the 4 original website functions are the **Sep 19 versions**; `unsubscribe`, `resume` and `mint-handoff` are not deployed; the app's `redeem-handoff` v1 (2026-10-06) is; `delete-account` is the 2026-07-11 version (the new one isn't deployed — review XR-18). **Not set:** `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` (both required). Order and steps: MANUAL_STEPS §8.10 (B). Deploy from a green `main` with `scripts/deploy-functions.sh` and **explicit names** (no default since 2026-10-07; `mint-handoff` only with app 1.3.0). |
 | Website code | ✅ `main` = everything, live | **Merged 2026-10-07** (PR #1 test coverage + review fixes, PR #3 SPEC-21); Vercel deployed it to production. The site works with the OLD (Sep 19) functions still on Supabase: new parts that need new functions stay dormant until those are deployed: server-side Meta Lead/InitiateCheckout, the buyer's app profile, the sign-in links (`/welcome` keeps today's steps while `mint-handoff` doesn't answer). Vercel Production still points at the **dev** Supabase project + Dodo test mode (§5 switches it). |
-| Tests / CI | ✅ green on `main` | GitHub Actions on every PR and push to `main`: `site` (typecheck, lint, 120 Vitest, build), `functions` (55 Deno unit), `backend` (local Supabase: pgTAP `access`, `functions` and `handoff` tests + 89 integration tests, coverage gate ≥ 80% on the webhook, checkout and mint-handoff handlers), `e2e` (19 Playwright, iPhone WebKit). ~10 CI minutes per push (free tier: 2,000/month). **Branch protection on `main` is NOT on yet** — CI reports but does not block. Weekly preview workflow exists but is inert until configured (MANUAL_STEPS §8.8). Dodo test fixtures are schema-built, not captured. See README → Tests. |
-| External review | 🟡 in progress | `reviews/PROD_REVIEW.md` (2026-09-30). Status marked inline under every finding. All P0/P1 code fixes done; what's left is owner/dashboard steps + P2/P3 leftovers. |
+| Tests / CI | ✅ green on `main` | GitHub Actions on every PR and push to `main`: `site` (typecheck, lint, 120 Vitest, build), `functions` (55 Deno unit), `backend` (local Supabase: pgTAP `access`, `functions` and `handoff` tests + 89 integration tests, coverage gate ≥ 80% on the webhook, checkout and mint-handoff handlers), `e2e` (19 Playwright, iPhone WebKit). On `fix/prod-readiness-review` (2026-10-07): 154 Vitest, 87 Deno unit, 110 integration, 24 Playwright — all but the integration tests (Docker) run locally and green; CI has not run on the branch yet. ~10 CI minutes per push (free tier: 2,000/month). **Branch protection on `main` is NOT on yet** — CI reports but does not block. Weekly preview workflow exists but is inert until configured (MANUAL_STEPS §8.8). Dodo test fixtures are schema-built, not captured. See README → Tests. |
+| External review | 🟡 in progress | `reviews/PROD_REVIEW.md` (2026-09-30): all P0/P1 code fixes done. **Second review** `reviews/WEB2APP_PROD_READINESS_REVIEW.md` (2026-10-07, website + app): every code finding fixed on `fix/prod-readiness-review` (website, not merged) and `release/1.3.0` (app), status table at its top. What's left is owner/dashboard steps, consolidated in MANUAL_STEPS §8.10. |
 | Supabase (prod) | ⬜ untouched | `<PROD_PROJECT_REF>` (kinderwell) — NOTHING done yet, by design |
 | Dodo | ✅ test mode working | 2 products, test API key, webhook `<WEBHOOK_ENDPOINT_ID>` (all event types). **Full purchase→entitlement loop verified.** **KYC APPROVED (owner-reported 2026-09-28)** → live mode is now *available*, but nothing is provisioned in it yet (see §5 steps 2–3). |
-| Site routes | ✅ in code | `/` = brand homepage (App Store badge + quiz CTA), static. `/start` = the paid-ad landing (`?a=` variants, server-rendered). Ad params (`a`, `fbclid`, `utm_*`) hitting `/` are redirected to `/start` with the query intact (`next.config.mjs`). **Ad URLs should point at `/start`.** `/r/<token>` = resume link (win-back emails, "open in Safari"). `/manage` → Dodo portal. Mid-funnel pages send `X-Robots-Tag: noindex`. |
+| Site routes | ✅ in code | `/` = brand homepage (App Store badge + quiz CTA), static. `/start` = the paid-ad landing (`?a=` variants, server-rendered). Ad params (`a`, `fbclid`, `utm_*`) hitting `/` are redirected to `/start` with the query intact (`next.config.mjs`). **Ad URLs should point at `/start`.** `/r/<token>` = resume link (win-back emails, "open in Safari"; tokens are opaque since 2026-10-07). `/u?u=&t=` = the unsubscribe link (hands u/t to `/unsubscribe` in a cookie, so the pixel never sees them). `/manage` → Dodo portal (live unless `NEXT_PUBLIC_DODO_ENV=test`). Mid-funnel pages send `X-Robots-Tag: noindex`. |
 | Sign-in links (SPEC-21) | 🟡 merged, dormant | Website half **merged to `main` 2026-10-07** (PR #3; CI green). Dormant until `mint-handoff` and the `…1006_handoff_keys` migration are deployed to the Supabase project the live site uses — today that is **dev**, so deploying them to dev switches the links on for kinderwell.app. **Deploying `mint-handoff` is the go-live: do it with or after app v1.3.0 is live** (an older app has no Paste screen). Buyers then open the app already signed in: `/welcome`'s **Get Kinderwell** copies a one-time link, the email gets an **Open Kinderwell** button, `open.kinderwell.app/k/<key>` serves the no-app fallback page. Also needs the Vercel domain `open.kinderwell.app`. Owner steps: MANUAL_STEPS §8.9. App half (redeem-handoff, paste screen): `~/mamalearn`, SPEC-21. |
 | Resend (email) | ✅ verified + sending | `kinderwell.app` (root, branded sender) + `mail.kinderwell.app` (fallback), region **us-east-1**, click/open tracking OFF (hurts transactional deliverability). DKIM+2 CNAMEs+DMARC live in Namecheap and verified by `dig`. `RESEND_API_KEY` + `EMAIL_FROM` set in Supabase. **Verified 2026-09-19** — a live API send returned a message id. NOTE: the API key is scoped to sending only, so it cannot read domain status; test by sending, not by querying. |
 | Meta pixel/CAPI | ⬜ not started | Funnel runs; no ad attribution until configured |
@@ -62,6 +62,10 @@ Ordered. Nothing below is optional.
    - [ ] Supabase → Authentication → Email Templates → **Magic Link**: body
          shows `{{ .Token }}`. With only `{{ .ConfirmationURL }}` buyers get a
          link instead of a code and cannot sign in inside the app.
+   - [ ] Same for the **Confirm signup** template (review 2026-10-07, B-11):
+         a brand-new organic parent on "Continue with Email" is created by
+         that request and gets THIS template, not Magic Link. Test once with
+         a never-used address.
    - [ ] Supabase → Authentication → **SMTP**: custom SMTP via Resend —
          `smtp.resend.com`, port 465, user `resend`, password = a Resend API
          key, sender `hello@kinderwell.app`. The built-in mailer only
@@ -86,8 +90,8 @@ Ordered. Nothing below is optional.
 
    **Then:** run the spec's acceptance tests on TestFlight against dev
    Supabase + Dodo test mode (card `4242…`). **Before App Review:** repeat
-   the four Supabase Auth settings on **prod**, apply all three web2app
-   migrations to prod via `~/mamalearn/scripts/db-push-prod.sh`, deploy
+   the Supabase Auth settings on **prod** (both email templates), apply all
+   five web2app migrations to prod via `~/mamalearn/scripts/db-push-prod.sh`, deploy
    `delete-account` to prod, and re-run the email-code test against prod.
    ⚠️ **Prod order: migrations BEFORE `delete-account`.** The new function
    reads `entitlements` before deleting anything; deployed first, every
@@ -106,8 +110,13 @@ Ordered. Nothing below is optional.
    `kinderwellteam@gmail.com`, entity "Kinderwell", California governing law
    (clause added to the web Terms to match), dated 2026-09-19. No physical
    address is published, matching the app's existing policy.
+   **Updated 2026-10-07** (review §8): the privacy policy names every service
+   that receives data and covers cookies, retention, children and Do Not
+   Track; the Terms gained an 18+ requirement and a liability limit. The
+   homepage and unsubscribe page now show the same support address.
    ⚠️ If the app's legal docs change, change these too — a customer can read
-   both and they must not contradict.
+   both and they must not contradict. The app's docs still need this
+   round's changes (owner-only there; MANUAL_STEPS §8.10).
 4. ~~Reply-to address~~ — **DONE 2026-09-19.** Both email-sending functions
    now set `reply_to` from the `SUPPORT_EMAIL` secret
    (`kinderwellteam@gmail.com`), so replies reach a real inbox.
@@ -126,10 +135,11 @@ Ordered. Nothing below is optional.
    (`SUPPORT_EMAIL` = `kinderwellteam@gmail.com`) AND the Namecheap forwarder
    `hello@kinderwell.app` → `kinderwellteam@gmail.com`.
 
-5. **Proof stats must be defensible.** The quiz keeps variant B's
-   hard-hitting placeholder numbers by owner decision (Mirror beat's "83% of
-   parents", the "two weeks" claims, "12 lessons"). On the web these are Meta
-   ad-policy and FTC surface, not just App Review. Back them or soften them.
+5. **Proof stats must be defensible.** ✅ **Owner confirmed 2026-10-07** that
+   "83% of parents" and the "two weeks" claims are real: keep the evidence on
+   file (how each was measured). "12 lessons", "10-week path" and "Week 10"
+   didn't match the app (13 lessons, no weeks) and were fixed in code
+   (review B-12, `2f14689`).
 6. **App Store URL** — the live app is
    `https://apps.apple.com/us/app/kinderwell/id6758403231` (verified HTTP 200;
    `/us/` is deliberate since we target US only, and it avoids a redirect hop).
@@ -142,8 +152,11 @@ Ordered. Nothing below is optional.
 7b. ~~`NEXT_PUBLIC_DODO_ENV` must match `DODO_ENV`~~ — **no longer a checkout
    footgun (2026-09-30).** The overlay now reads test/live from the checkout
    URL the server returned (review P0-3: a mismatch used to leave a buyer who
-   had PAID stuck on the overlay). `NEXT_PUBLIC_DODO_ENV` only guards the
-   dev-skip buttons now; still set it to `live` at go-live.
+   had PAID stuck on the overlay). `NEXT_PUBLIC_DODO_ENV` still decides two
+   things: the dev-skip buttons (`live` disables them) and, since 2026-10-07,
+   where `/manage` sends subscribers (`test` → Dodo's test portal, anything
+   else → live; review B-10). `live` at go-live, then
+   `curl -sI https://kinderwell.app/manage`.
 8. ~~PostHog key~~ — **DONE 2026-09-19.** Set in both Vercel (browser) and
    Supabase (server-side webhook events), using the SAME project token as the
    iOS app so one person's ad-click → purchase → first-lesson journey is a
@@ -192,10 +205,19 @@ Ordered. Nothing below is optional.
    Needs the Vercel domain `open.kinderwell.app`, the `…1006_handoff_keys`
    migration and four functions deployed, with `mint-handoff`'s deploy timed
    with or after app v1.3.0 (that deploy is what switches it on).
-10. **Testimonials must be real.** The quotes on /start, /email and /offer
-   (Sarah, Megan, Daniel, Aisha) — if they aren't from real customers, the
-   FTC's 2024 fake-review rule makes each one a per-violation civil-penalty
-   exposure, and Meta rejects ads landing on them. Replace or remove.
+9e. **The 2026-10-07 production-readiness review (website + app) —
+   MANUAL_STEPS §8.10.** `reviews/WEB2APP_PROD_READINESS_REVIEW.md`. Its one
+   P0 code hole (a purchase with someone else's email minted a sign-in key
+   for their existing account) and every P1/P2 code finding are fixed on
+   `fix/prod-readiness-review` (not merged) and the app's `release/1.3.0`
+   (not pushed). §8.10 is the consolidated owner list: merge, Meta, Vercel
+   (`open.kinderwell.app` ≥ 24 h before any 1.3.0 install, `/manage` check),
+   Dodo toggles, Auth templates, the device pass, the privacy-policy gaps,
+   then the prod flip in one sitting.
+10. **Testimonials must be real.** ✅ **Owner confirmed 2026-10-07** that the
+   quotes on /start, /email and /offer (Sarah, Megan ×2, Daniel, Aisha) are
+   from real customers. Keep their consent and the original messages: the
+   FTC's 2024 fake-review rule and Meta's ad review can both ask.
 
 ### Known gotcha when testing emails
 
@@ -322,6 +344,63 @@ active and unsubscribe links don't work. Owner steps: MANUAL_STEPS §8.6.
   route/redirect/header smoke test, screenshots at desktop + 390px.
   **NOT verified:** anything against Dodo, Supabase, Meta or Resend — the
   refund path in particular has never run end to end.
+
+### 2026-10-07 (later) — second production-readiness review fixed (CODE ONLY, `fix/prod-readiness-review`, not merged or deployed)
+
+Review: `reviews/WEB2APP_PROD_READINESS_REVIEW.md` (status table at its top).
+App half on `~/mamalearn` `release/1.3.0`. No new migrations. What changed,
+for anyone operating it:
+- **Sign-in links (SPEC-21):** a key is minted only for the browser that
+  created the checkout that was **paid** (the nonce's hash now rides in that
+  checkout's Dodo metadata; dodo-webhook copies it to the session at first
+  activation), and never for a purchase on an account older than its funnel
+  session — those get the email-code steps and you get a "Web purchase on an
+  existing account" alert. A session that belongs to one email can't be moved
+  to another (capture-email 409; the page starts a fresh session). Resume
+  links are opaque (encrypted) — older links in inboxes stop working (they
+  were only ever sent from dev); resume's "mint" needs the session's email.
+- **Webhook:** any activating event for a second live subscription cancels it
+  once and alerts ("Duplicate purchase — refund the extra subscription"); the
+  entitlement write is conditional, so two concurrent first purchases leave
+  one row and cancel the other. Partial refunds that add up to the payment
+  revoke; a refund without `is_partial` is judged by the payment. A failed
+  welcome email is retried once, then alerted. Activations never move the
+  paid-through date earlier (except plan changes). Idempotency reclaim is 7
+  minutes. `unlinked_purchases.payload` keeps ids and amounts only.
+- **Sweep:** checks up to 200 overdue `active` **and `past_due`** rows against
+  Dodo; if Dodo can't be asked, nobody is expired that hour ("Expiry paused"
+  alert, at most every 6 h). Prunes handoff keys and webhook ids. A cancel
+  still failing two days after a refund alerts daily. Leads whose first
+  payment failed get the win-back ladder.
+- **Access rule:** `hasAccess` now matches the app (an `active` row keeps 6
+  days past its date for a late renewal), so checkout won't sell a second
+  subscription during a late renewal. One table of cases pins the website's,
+  the app's and redeem-handoff's copies.
+- **Site:** /offer shows the account email with "Not you?"; a browser with no
+  session gets a "saved, just not in this browser" card instead of a restart;
+  "Copy a link for Safari" copies inside the tap; a silent checkout overlay
+  falls back to Dodo's hosted page after 15 s; the CSP allows Dodo's wallet
+  script; PostHog loads lazily (/start first load 207 → 111 kB), tags
+  `environment`/`app_env`/`surface`, and resets before the next funnel run
+  after a purchase; `/manage` goes to the live portal unless
+  `NEXT_PUBLIC_DODO_ENV=test`; `?a=__proto__` no longer 500s /start; unknown
+  quiz steps 404; unsubscribe links go through `/u`.
+- **Copy:** "12 lessons, starting with '<named lesson>'" → "13 lessons,
+  starting with the foundations"; "10-week path"/"Week 10" removed (B-12).
+- **Rate limits:** honeypot before the limits; IPv6 counted per /64; the 429
+  says whether to wait a minute or an hour; `displayedPrice` required.
+- **Legal:** privacy policy and Terms brought in line with the code
+  (review §8); one public support address, `kinderwellteam@gmail.com`
+  (`hello@kinderwell.app` stays the sending address).
+- **Tests:** e2e B1 now runs with PostHog really capturing (posthog-js had
+  silently dropped every event under Playwright) and fails if a quiz answer,
+  the name or the email reaches PostHog or the Meta pixel. CI's e2e build
+  sets a placeholder `NEXT_PUBLIC_POSTHOG_KEY`.
+- **Deploy log:** `scripts/deploy-functions.sh` appends every successful
+  deploy to `DEPLOY_LOG.md` (instead of an automated drift detector — owner
+  decision); commit it after each deploy.
+- **Deploy script:** explicit function names, a second confirmation for
+  `mint-handoff`, reads `linked-project.json`, refuses unknown projects.
 
 ### 2026-10-07 — everything merged to `main` and live on the site (functions NOT deployed)
 
@@ -652,9 +731,11 @@ The single most likely cause: **webhook not firing or failing signature check.**
 ### "A refunded customer still has access"
 Check `entitlements.status`. Refund/dispute webhooks set `revoked` immediately.
 If it still says `active`, the webhook never arrived (see above). Note the app
-(v1.3.0+) caches entitlement locally and never interrupts a session: the next
-launch re-checks the row in the background and clears the cache, and the
-launch AFTER that shows the paywall. Offline launches keep the cache.
+(v1.3.0+) caches entitlement locally and never interrupts a session: a launch
+re-checks the row in the background (20 s timeout) and clears the cache, as
+does coming back to the foreground (at most hourly, since 2026-10-07); the
+launch AFTER that shows the paywall. A phone that can't reach Supabase keeps
+the cache.
 
 ### "A web buyer says the app shows them the paywall"
 In order of likelihood:
@@ -697,10 +778,13 @@ refusing checkouts for that plan (you also got a `Checkout blocked` alert).
 Fix `NEXT_PUBLIC_PRICE_*` in Vercel and redeploy, or fix the Dodo product.
 Workers re-check Dodo's price every 10 minutes.
 
-### "Too many attempts. Please wait a minute"
-The in-code rate limit (§2). A real person should never hit it; if many do
-(e.g. an office behind one IP), raise the limit in the function source.
-`rate_limit_hits` shows the counters; the sweep deletes day-old rows.
+### "Too many attempts. Please wait a minute" / "…try again in an hour"
+The in-code rate limit (§2). "A minute": the per-IP limit (IPv6 counted per
+/64 since 2026-10-07). "An hour": five captures of the same email in an hour.
+Honeypot (bot) posts no longer count against an address. A real person should
+never hit it; if many do (e.g. an office behind one IP), raise the limit in
+the function source. `rate_limit_hits` shows the counters; the sweep deletes
+day-old rows.
 
 ### "The win-back email button goes to /start"
 The resume token was expired (30 days), tampered with, or signed with a
@@ -739,10 +823,38 @@ domain) → add it to `CSP` in `next.config.mjs` before ever enforcing.
 
 ### "A customer got two welcome emails" / "got none"
 One is claimed per subscription via `entitlements.activated_subscription_id`.
-None: check the row exists and `activated_subscription_id` equals
-`dodo_subscription_id`; if it does, the claim ran and the email failed (see
-below). Two: they have two subscriptions — look for a "Duplicate purchase"
-alert.
+None: since 2026-10-07 a failed send is retried once and then alerted
+("Welcome email failed — send the app steps by hand", with the address);
+otherwise check the row exists and `activated_subscription_id` equals
+`dodo_subscription_id`. Two: they have two subscriptions — look for a
+"Duplicate purchase" alert.
+
+### Alerts added 2026-10-07 — what each one asks of you
+- **"Web purchase on an existing account"** — the purchase landed on an
+  account created before its funnel session: usually an app user or a
+  returning lead buying on the web. No one-tap link went out; the email has
+  the email-code steps. Act only if the account owner writes in about a
+  purchase they didn't make (someone paid with their email): refund it.
+- **"Duplicate purchase — refund the extra subscription"** — a second live
+  subscription (two devices, or a late renewal retry on an old one after
+  they re-bought) was cancelled so it won't renew; refund its latest charge
+  in Dodo.
+- **"Partial refunds add up to the whole payment — access revoked"** /
+  **"Refund without is_partial — treated as a full refund"** — access was
+  revoked and the subscription cancelled; restore by hand if that wasn't the
+  intent.
+- **"Expiry paused — Dodo could not confirm overdue subscriptions"** — the
+  sweep couldn't ask Dodo about an overdue row, so it expired nobody that
+  hour (repeats at most every 6 h). Check status.dodopayments.com and
+  `DODO_API_KEY`.
+- **"Cancel still failing — cancel this subscription by hand"** — a refunded
+  or disputed subscription's cancel has failed for 2+ days; cancel it in the
+  Dodo dashboard before it renews (repeats daily).
+
+### "A customer says /offer shows someone else's email"
+They opened a resume link (`/r/…`) someone else shared. Tell them to tap
+**Not you?** (it starts a fresh plan); nothing was charged to them. If they
+paid anyway, the purchase is on the other account: refund it.
 
 ### "A refunded customer is still being billed"
 `entitlements.cancel_pending = true` means the Dodo cancel hasn't succeeded;
@@ -758,7 +870,7 @@ check `supabase functions logs dodo-webhook` for `handoff email failed`.
 ```bash
 supabase secrets list --project-ref <DEV_PROJECT_REF>   # names only (values are hashed)
 supabase migration list                                     # local vs remote history
-scripts/deploy-functions.sh [names…]                        # the only way to deploy functions (checks CI first)
+scripts/deploy-functions.sh <name> [<name>…]               # the only way to deploy functions (checks CI and the linked project first; logs to DEPLOY_LOG.md)
 npm test                                                    # site + Deno unit tests, no Docker needed
 ```
 
@@ -796,11 +908,13 @@ Do NOT copy dev values. Everything below is separately provisioned:
    MANUAL_STEPS §2.2).
 6. Apply ALL FIVE migrations (`…0918_web2app`, `…0928_email_opt_outs`,
    `…0930_webhook_hardening`, `…1005_event_ordering`, `…1006_handoff_keys`), THEN deploy
-   all 7 functions against prod (`scripts/deploy-functions.sh`) + set prod secrets
-   (`DODO_ENV=live`, and `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` and
+   the functions against prod (`scripts/deploy-functions.sh` with explicit names;
+   `mint-handoff` last, with app 1.3.0) + set prod secrets (MANUAL_STEPS §2.4:
+   `DODO_ENV=live`, and `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET` and
    `MAILING_ADDRESS` — funnel requests, signed links and marketing email
-   are refused without them).
-7. Vercel Production env → prod Supabase URL + anon key.
+   are refused without them). The one-sitting order: MANUAL_STEPS §8.10 (C).
+7. Vercel Production env → prod Supabase URL + anon key, `NEXT_PUBLIC_DODO_ENV=live`
+   (check `/manage` lands on `customer.dodopayments.com`).
 8. **Delete `NEXT_PUBLIC_DEV_SKIP`** and redeploy.
 9. Do one real-card purchase, then refund it, verifying the full §7 checklist.
 10. Record every new external-state row in `~/mamalearn/docs/OPS_STATE.md`.

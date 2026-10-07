@@ -1,24 +1,26 @@
 // resume — rebuilds a funnel session in a browser that never saw the quiz
 // (review P1-6). Two actions, both via the Next.js proxy (/api/resume):
 //
-//   mint    { sessionId }  → { token }   the device holding the session asks
-//                                        for a link to continue elsewhere
-//                                        ("open in Safari for Apple Pay")
+//   mint    { sessionId, email } → { token }   the device holding the session
+//                                        (and its email) asks for a link to
+//                                        continue elsewhere ("open in Safari
+//                                        for Apple Pay")
 //   resolve { token }      → the session: id, user, email, answers, utm,
 //                                        variant, and whether they already pay
 //
 // Links are kinderwell.app/r/<token> (app/r/[token]/route.ts resolves them
 // server-side, so the token never reaches a page URL the pixel can see).
-// Win-back emails carry a token minted by winback-sweep. Tokens are
-// HMAC-signed and expire after 30 days (_shared/email.ts).
+// Win-back emails carry a token minted by winback-sweep. Tokens are opaque
+// (encrypted and authenticated, so the session id is not in the link) and
+// expire after 30 days (_shared/email.ts).
 //
 // Deploy: supabase functions deploy resume --no-verify-jwt
-// Secrets: UNSUBSCRIBE_SECRET (falls back to SWEEP_SECRET), FUNNEL_PROXY_SECRET
+// Secrets: UNSUBSCRIBE_SECRET (required, no fallback), FUNNEL_PROXY_SECRET
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { isFromProxy, resumeToken, signingConfigured, verifyResumeToken } from '../_shared/email.ts';
+import { isFromProxy, resumeToken, signingConfigured, timingSafeEqual, verifyResumeToken } from '../_shared/email.ts';
 import { hasAccess } from '../_shared/entitlement.ts';
-import { isRateLimited } from '../_shared/ratelimit.ts';
+import { ipBucket, isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -33,14 +35,14 @@ export async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
   if (!isFromProxy(req)) return json({ error: 'forbidden' }, 403);
 
-  let body: { action?: string; sessionId?: string; token?: string; client_ip?: string };
+  let body: { action?: string; sessionId?: string; email?: string; token?: string; client_ip?: string };
   try {
     body = await req.json();
   } catch {
     return json({ error: 'bad_json' }, 400);
   }
 
-  if (await isRateLimited(admin, [{ key: `resume:ip:${body.client_ip ?? ''}`, windowSeconds: 60, max: 20 }])) {
+  if (await isRateLimited(admin, [{ key: `resume:ip:${ipBucket(body.client_ip)}`, windowSeconds: 60, max: 20 }])) {
     return json({ error: 'rate_limited' }, 429);
   }
 
@@ -57,6 +59,17 @@ export async function handler(req: Request): Promise<Response> {
       .eq('id', body.sessionId)
       .maybeSingle();
     if (!session?.user_id) return json({ error: 'session_not_found' }, 404);
+    // The device asking holds the session AND its email (both in its
+    // storage). A bare session id is not enough: a link resolves to the
+    // email and quiz answers, and session ids have travelled further than
+    // the device — Dodo's checkout metadata, older email links (IN-2).
+    // Wrong email looks exactly like no session.
+    const { data: userData } = await admin.auth.admin.getUserById(session.user_id);
+    const accountEmail = userData?.user?.email?.toLowerCase() ?? '';
+    const claimed = (body.email ?? '').trim().toLowerCase();
+    if (!accountEmail || !claimed || !timingSafeEqual(claimed, accountEmail)) {
+      return json({ error: 'session_not_found' }, 404);
+    }
     return json({ token: await resumeToken(session.id) });
   }
 

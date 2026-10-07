@@ -86,7 +86,6 @@
         "npm:eslint-config-next@15.5",
         "npm:eslint@^9.39.5",
         "npm:jsdom@^26.1.0",
-        "npm:lucide-react@^1.47.0",
         "npm:next@^15.1.0",
         "npm:postcss@^8.4.49",
         "npm:posthog-js@^1.200.0",

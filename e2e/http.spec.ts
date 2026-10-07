@@ -32,6 +32,15 @@ test('each ad variant’s headline is in the first HTML response of /start (P1-1
   }
 });
 
+test('/start survives ?a= values that name Object.prototype members, serving the default copy (B-7)', async ({ request }) => {
+  const fallback = VARIANTS.default.headline.split('*')[1];
+  for (const a of ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+    const res = await request.get(`/start?a=${a}`);
+    expect(res.status(), a).toBe(200);
+    expect(await res.text(), a).toContain(fallback);
+  }
+});
+
 test('ad clicks that land on / are sent to /start with their parameters', async ({ request }) => {
   const res = await request.get('/?fbclid=CLICK123&a=tantrums', { maxRedirects: 0 });
   expect([307, 308]).toContain(res.status());
@@ -108,4 +117,34 @@ test('Apple’s association file is JSON, unredirected, and claims /k/* for the 
   const body = await res.json();
   expect(body.applinks.details[0].appIDs).toContain('8B52Q4QNLH.com.kinderwell.app');
   expect(body.applinks.details[0].components[0]['/']).toBe('/k/*');
+});
+
+test('the report-only CSP lets in what checkout loads into our own page (FE-6)', async ({ request }) => {
+  const csp = (await request.get('/offer')).headers()['content-security-policy-report-only'] ?? '';
+  const directive = (name: string) => csp.split(';').map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? '';
+  // The wallet (Apple Pay) script is injected into the page itself.
+  expect(directive('script-src')).toContain('https://*.dodopayments.com');
+  expect(directive('frame-src')).toContain('https://*.dodopayments.com');
+  expect(directive('connect-src')).toContain('https://*.dodopayments.com');
+});
+
+test('an unsubscribe link never leaves its user id and token in a page URL the pixel reports (P3)', async ({ request }) => {
+  const old = await request.get('/unsubscribe?u=0b6f5a3e-1d2c-4e5f-8a9b-0c1d2e3f4a5b&t=abcDEF123_-abcDEF123_-abcDEF123_-abcDEF1234', { maxRedirects: 0 });
+  expect(old.status()).toBe(307);
+  expect(old.headers()['location']).toMatch(/^\/u\?u=/);
+  const link = await request.get(old.headers()['location'], { maxRedirects: 0 });
+  expect(link.status()).toBe(307);
+  expect(link.headers()['location']).toMatch(/\/unsubscribe$/);
+  expect(link.headers()['set-cookie']).toContain('kw_unsub=');
+});
+
+test('a quiz step that does not exist is a 404, not an empty page (P3)', async ({ request }) => {
+  for (const step of ['0', '99', 'abc']) expect((await request.get(`/quiz/${step}`)).status(), step).toBe(404);
+});
+
+test('the Meta pixel never auto-collects: autoConfig is off in the HTML every page ships (app INVARIANTS #29)', async ({ request }) => {
+  // CI builds with a placeholder pixel id, so the snippet is present.
+  const html = await (await request.get('/start')).text();
+  expect(html).toContain("fbq('set', 'autoConfig', false");
+  expect(html.indexOf("'autoConfig', false")).toBeLessThan(html.indexOf("fbq('init'"));
 });

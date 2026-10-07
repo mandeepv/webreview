@@ -180,6 +180,7 @@ export default function QuizStep({ stepNumber }: { stepNumber: number }) {
             <input
               type="text"
               autoComplete="given-name"
+              aria-label="Your first name"
               placeholder="Your first name"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}

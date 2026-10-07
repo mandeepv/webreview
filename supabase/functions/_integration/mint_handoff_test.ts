@@ -192,3 +192,18 @@ itest('M9: one buyer’s nonce cannot mint for another buyer’s session', async
   assertNotEquals(row.user_id, b.user.id);
   assertEquals((await keysOf(b.user.id)).length, 0);
 });
+
+itest('M10: a purchase that landed on an account older than the session never mints (B-1)', async () => {
+  fake.install();
+  // Someone typed an existing customer's address on /email and paid. Auth
+  // users can't be backdated here, so the session is dated forward instead:
+  // either way the account is 20 minutes older than the session.
+  const { user, sessionId, nonce } = await paidBuyer();
+  await db().from('funnel_sessions').update({ created_at: isoIn(20 * 60 * 1000) }).eq('id', sessionId);
+  assertEquals(await call(handler, 'mint-handoff', body(sessionId, nonce)), { status: 404, json: { error: 'not_found' } });
+  assertEquals((await keysOf(user.id)).length, 0);
+
+  // The account the funnel itself created for the session still gets its key.
+  const fresh = await paidBuyer();
+  assertEquals((await call(handler, 'mint-handoff', body(fresh.sessionId, fresh.nonce))).status, 200);
+});

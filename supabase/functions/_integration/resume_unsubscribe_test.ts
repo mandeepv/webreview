@@ -26,7 +26,8 @@ async function session() {
   return { user, sessionId };
 }
 
-const mint = (sessionId: string, ip = randomIp()) => call(resume, 'resume', { action: 'mint', sessionId, client_ip: ip });
+const mint = (sessionId: string, email: string, ip = randomIp()) =>
+  call(resume, 'resume', { action: 'mint', sessionId, email, client_ip: ip });
 const resolve = (token: string, ip = randomIp()) => call(resume, 'resume', { action: 'resolve', token, client_ip: ip });
 
 itest('R0: wrong method, missing or wrong proxy key, bad JSON and unknown actions are refused', async () => {
@@ -36,15 +37,17 @@ itest('R0: wrong method, missing or wrong proxy key, bad JSON and unknown action
   assertEquals((await call(resume, 'resume', { action: 'mint' }, { key: 'wrong' })).status, 403);
   assertEquals((await call(resume, 'resume', null, { raw: '{nope' })).status, 400);
   assertEquals((await call(resume, 'resume', { action: 'steal', client_ip: randomIp() })).json.error, 'unknown_action');
-  assertEquals((await mint('not-a-uuid')).json.error, 'missing_session');
-  assertEquals((await mint(crypto.randomUUID())).json.error, 'session_not_found');
+  assertEquals((await mint('not-a-uuid', 'a@example.com')).json.error, 'missing_session');
+  assertEquals((await mint(crypto.randomUUID(), 'a@example.com')).json.error, 'session_not_found');
 });
 
 itest('R1: a minted link resolves back to the same session with its answers, in any browser', async () => {
   fake.install();
   const { user, sessionId } = await session();
-  const minted = await mint(sessionId);
+  // The browser sends the email it holds; any letter case.
+  const minted = await mint(sessionId, ` ${user.email.toUpperCase()} `);
   assertEquals(minted.status, 200);
+  assertEquals(String(minted.json.token).includes(sessionId), false, 'the session id is in the link');
 
   const resolved = await resolve(minted.json.token as string);
   assertEquals(resolved.json, {
@@ -60,13 +63,10 @@ itest('R1: a minted link resolves back to the same session with its answers, in 
 
 itest('R2: a tampered, re-pointed or expired link is refused', async () => {
   fake.install();
-  const { sessionId } = await session();
-  const other = await session();
-  const token = (await mint(sessionId)).json.token as string;
-  const [, exp, sig] = token.split('.');
+  const { user, sessionId } = await session();
+  const token = (await mint(sessionId, user.email)).json.token as string;
 
   assertEquals((await resolve(`${token.slice(0, -2)}xx`)).status, 401);
-  assertEquals((await resolve(`${other.sessionId}.${exp}.${sig}`)).status, 401, 're-pointed at another session');
   assertEquals((await resolve('garbage')).status, 401);
 
   const realNow = Date.now;
@@ -91,8 +91,17 @@ itest('R3: resolve says whether the person already pays, by the same rule the ap
   for (const [status, end, expected] of cases) {
     const { user, sessionId } = await session();
     await putEntitlement({ user_id: user.id, status, current_period_end: end });
-    const token = (await mint(sessionId)).json.token as string;
+    const token = (await mint(sessionId, user.email)).json.token as string;
     assertEquals((await resolve(token)).json.subscribed, expected, `${status} until ${end}`);
+  }
+});
+
+itest('R2b: a bare session id is not enough to mint a link — the caller must also hold the email (B-3, IN-2)', async () => {
+  fake.install();
+  const { user, sessionId } = await session();
+  for (const email of [undefined, '', 'someone-else@example.com', user.email.replace('@', '+x@')]) {
+    const res = await call(resume, 'resume', { action: 'mint', sessionId, email, client_ip: randomIp() });
+    assertEquals(res, { status: 404, json: { error: 'session_not_found' } }, String(email));
   }
 });
 

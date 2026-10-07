@@ -33,6 +33,7 @@ cp supabase/migrations/20260918000000_web2app.sql ~/mamalearn/supabase/migration
 cp supabase/migrations/20260928000000_email_opt_outs.sql ~/mamalearn/supabase/migrations/   # added 2026-09-28 — see §8.6
 cp supabase/migrations/20260930000000_webhook_hardening.sql ~/mamalearn/supabase/migrations/ # added 2026-09-30 — see §8.7
 cp supabase/migrations/20261005000000_event_ordering.sql ~/mamalearn/supabase/migrations/    # added 2026-10-05 — see §8.7
+# 20261006000000_handoff_keys.sql is authored in the app repo (SPEC-21) — already there.
 cd ~/mamalearn && supabase db push        # linked to DEV per house rules
 ```
 (Prod later, owner-run, via `scripts/db-push-prod.sh` — §9.)
@@ -43,10 +44,27 @@ provider settings make sure **passwordless / OTP login** is allowed and set
 OTP length 6. Do this on dev now, prod in §9. (The iOS app's "Continue with
 Email" — Phase 0 app work — depends on this too.)
 
+Then Authentication → **Email Templates**: BOTH of these must show the code,
+`{{ .Token }}`, not only `{{ .ConfirmationURL }}` (review 2026-10-07, B-11):
+- **Magic Link** — what an existing account (every web buyer) gets.
+- **Confirm signup** — what a brand-new organic parent gets the first time
+  they use "Continue with Email": GoTrue creates the user and sends THIS
+  template, not Magic Link. With a link in it they land in Safari and never
+  get into the app. Test once on dev with an address that has never been used.
+
 ### 2.3 Deploy the edge functions
-**Preferred since 2026-10-05: `scripts/deploy-functions.sh [names…]`** — it refuses to deploy
-anything that isn't committed, pushed and green in CI, shows which project is linked, and
-then runs the same `deploy --no-verify-jwt` commands as below.
+**Use `scripts/deploy-functions.sh <name> [<name> …]`** — it refuses to deploy
+anything that isn't committed, pushed and green in CI, reads which project the
+CLI is linked to (`supabase/.temp/linked-project.json`) and refuses an unknown
+one, then runs the same `deploy --no-verify-jwt` commands as below. **Name every
+function** (since 2026-10-07 there is no "all" default): the usual set is
+`capture-email create-checkout dodo-webhook winback-sweep unsubscribe resume`.
+**Not `mint-handoff`** until app v1.3.0 is live — its deploy switches the
+sign-in links on (§8.9 step 5); the script asks for a second confirmation.
+Each successful deploy is appended to `DEPLOY_LOG.md` (date, project,
+function, commit): commit and push it afterwards. That log is the record of
+what runs where; check it against `supabase functions list` before the prod
+flip and before ads.
 ```bash
 cd <this repo>
 # ALL functions deploy with --no-verify-jwt: this Supabase project uses the
@@ -79,10 +97,34 @@ supabase secrets set \
   POSTHOG_KEY=<existing phc_ key>   \
   POSTHOG_HOST=https://us.i.posthog.com \
   PRICE_ANNUAL=59.99 PRICE_MONTHLY=12.99 \
-  SWEEP_SECRET=$(openssl rand -hex 24)
+  SWEEP_SECRET=$(openssl rand -hex 24) \
+  FUNNEL_PROXY_SECRET=<same value as in Vercel> \
+  UNSUBSCRIBE_SECRET=$(openssl rand -hex 32) \
+  MAILING_ADDRESS="<postal address for CAN-SPAM>" \
+  SUPPORT_EMAIL=kinderwellteam@gmail.com \
+  ALERT_EMAIL=<where owner alerts go; optional, defaults to SUPPORT_EMAIL>
 ```
+Every secret the functions read, so a missing one is a choice, not a surprise
+(review 2026-10-07, XR-16):
+
+| Secret | Read by | Without it |
+|---|---|---|
+| `FUNNEL_PROXY_SECRET` | capture-email, create-checkout, resume, unsubscribe, mint-handoff | **every funnel call is refused** (fails closed). Same value in Vercel. |
+| `UNSUBSCRIBE_SECRET` | unsubscribe, resume, winback-sweep | no unsubscribe/resume links; the win-back ladder is skipped |
+| `MAILING_ADDRESS` | winback-sweep | in live mode the win-back ladder is skipped (CAN-SPAM) |
+| `SWEEP_SECRET` | winback-sweep | the sweep refuses every call |
+| `SUPPORT_EMAIL`, `ALERT_EMAIL` | email reply-to; owner alerts | alerts only reach the function logs |
+| `DODO_*`, `RESEND_API_KEY`, `EMAIL_FROM`, `SITE_URL`, `APP_STORE_URL`, `PRICE_*` | as above | checkout/email/links break |
+| `META_PIXEL_ID`, `META_CAPI_TOKEN` | Lead/InitiateCheckout/Purchase server events | no server-side Meta events |
+| `META_TEST_EVENT_CODE` | the same | set ONLY during the Events Manager test run, then delete |
+| `POSTHOG_KEY`, `POSTHOG_HOST` | dodo-webhook | no server-side `web_sub_*` events |
+| `ALLOW_UNAUTHENTICATED_FUNNEL` | the proxy check | local dev only; ignored when `DODO_ENV=live` (IN-9) |
 
 ### 2.5 Schedule the sweeper (hourly)
+Not optional: besides the win-back and "finish setting up" emails, it retries
+refund cancels, heals or expires overdue subscriptions, and prunes rate-limit
+windows, used sign-in keys and old webhook ids. Use the header form (the
+secret stays out of URLs and logs).
 Dashboard → SQL editor (pg_cron + pg_net are available on Supabase):
 ```sql
 select cron.schedule(
@@ -153,6 +195,13 @@ select cron.schedule(
       everything in `.env.example`. Preview values: dev Supabase URL + anon
       key, real PostHog key, real pixel ID.
 - [ ] Attach the domain (Vercel gives you the DNS records for Namecheap).
+- [ ] `NEXT_PUBLIC_DODO_ENV`: `test` on Preview (and on Production while it
+      still points at dev + Dodo test mode); `live` on Production at go-live.
+      It decides where kinderwell.app/manage sends subscribers — `test` →
+      Dodo's TEST customer portal, anything else → the live one (review
+      2026-10-07, B-10) — and `live` disables the dev-skip buttons. Check after
+      every Production change: `curl -sI https://kinderwell.app/manage` →
+      `location:` on `customer.dodopayments.com`, not `test.customer…`.
 
 ## 7. End-to-end test (test mode, before any ads)
 
@@ -192,17 +241,16 @@ which our handler correctly rejects — don't use it against the real function.
 
 ## 8. Legal + claims (before launch, not after)
 
-- [ ] Fill every `[BRACKET]` in `app/legal/*` — support email, business
-      name/address, dates. The privacy policy's Meta hashed-email disclosure
-      and the refund policy's 14-day promise are already written; keep them
-      true (the /offer page promises the same 14 days — they must match).
-- [ ] **⚠︎ Confirm every proof stat is defensible before ads run.** The quiz
-      keeps variant B's hard-hitting placeholder numbers by your decision
-      (e.g. the Mirror beat's "83% of parents", the "two weeks" results
-      claims, "12 lessons"). Same checklist as the app's
-      `docs/specs/variant-b-onboarding-copy.md` — but the web versions are
-      ALSO Meta ad-policy and FTC surface, so either back each number or
-      soften it to an unfalsifiable form before spend starts.
+- [x] `app/legal/*` filled (2026-09-19) and brought in line with the code
+      (2026-10-07, §8.10). Keep them true: the refund policy's 14 days must
+      match the /offer page, and the privacy policy must change whenever the
+      code changes what it collects or who receives it.
+- [x] **Proof stats** — owner confirmed 2026-10-07 that "83% of parents"
+      and the "two weeks" claims are real; keep how each was measured on
+      file (Meta ad review and the FTC can ask). "12 lessons" / "10-week
+      path" / "Week 10" did not match the app and were fixed in code
+      (review B-12). Same checklist as the app's
+      `docs/specs/variant-b-onboarding-copy.md`.
 
 ## 8.5 Preview skips — REMOVE BEFORE ADS
 
@@ -392,7 +440,13 @@ not in the app.
 **Order matters:** the database change first, then the functions, then the
 website. Dev first, then the same on prod.
 
-- [ ] **1. Add the address in Vercel (about 5 minutes).**
+- [ ] **1. Add the address in Vercel (about 5 minutes) — at least 24 hours
+      before ANY v1.3.0 install** (TestFlight, ad hoc, App Review included).
+      iOS fetches the association file through Apple's CDN when the app is
+      installed; if it is missing then, iOS remembers "no association" until
+      its next periodic refresh, so the email button and the link page open
+      Safari for every early installer — and for App Review (review
+      2026-10-07, B-9).
   1. Vercel → project **kinderwell-web** → **Settings** → **Domains**.
   2. Type `open.kinderwell.app` → **Add**. If it asks, choose "connect to
      an environment: Production" (not a redirect).
@@ -403,11 +457,15 @@ website. Dev first, then the same on prod.
      Value: the one from Vercel. TTL: Automatic. Save (the green tick).
   5. Back in Vercel, wait for the domain to say **Valid Configuration**
      (a few minutes).
-  6. Check: open https://open.kinderwell.app/.well-known/apple-app-site-association
-     in a browser. You should see a short block of text starting with
-     `{"applinks"`. Opening https://open.kinderwell.app/ should take you to
-     kinderwell.app. (The code is live since 2026-10-07, so both work as
-     soon as the domain is added.)
+  6. Check, on BOTH hosts, from a terminal:
+     ```bash
+     curl -sI https://open.kinderwell.app/.well-known/apple-app-site-association   # 200, content-type application/json, no redirect
+     curl -sI https://kinderwell.app/.well-known/apple-app-site-association       # the same
+     ```
+     The body starts with `{"applinks"` and lists one app id,
+     `8B52Q4QNLH.com.kinderwell.app`. Opening https://open.kinderwell.app/
+     should take you to kinderwell.app. (The code is live since 2026-10-07,
+     so both work as soon as the domain is added.)
 - [ ] **2. Database (dev):** apply `20261006000000_handoff_keys.sql`. It is
       the app repo's migration (copied here unchanged), so apply it the
       app's way, from `~/mamalearn` (`supabase db push` against dev). Skip
@@ -432,8 +490,14 @@ website. Dev first, then the same on prod.
       answers (step 3, on the project the site uses), buyers are told to
       tap **Paste**, which only v1.3.0 understands. So deploy it **with or
       after** v1.3.0 is live in the App Store — or earlier only for the step 6
-      test, while no ads run and Dodo is in test mode. Steps 1, 2 and 4 are
-      safe any time.
+      test, while no ads run and Dodo is in test mode. Steps 2 and 4 are safe
+      any time; step 1 is safe any time and must come first (24 h ahead).
+      Two rules since 2026-10-07 (review B-1, B-3): a key is minted only for
+      the browser that created the checkout that was PAID, and never when the
+      purchase lands on an account older than its funnel session (an app user
+      buying on the web, a returning lead, or someone paying with another
+      person's email): those get the email-code steps, and you get a "Web
+      purchase on an existing account" alert.
 - [ ] **6. Test it once, end to end, in test mode (§7):** pay on an iPhone
       → tap **Get Kinderwell** → install the v1.3.0 build → open it → tap
       **Paste** → you land in the lessons. Also: tap **Open Kinderwell** in
@@ -450,6 +514,124 @@ website. Dev first, then the same on prod.
       app's `scripts/db-push-prod.sh`), as part of the v1.3.0 release, close
       to the website merge (step 5): until both are out, Meta counts Leads twice.
 
+## 8.10 Go-live checklist from the 2026-10-07 review (owner)
+
+The review (`reviews/WEB2APP_PROD_READINESS_REVIEW.md`) consolidated
+everything still undone into one ordered list. Its code findings are fixed on
+`fix/prod-readiness-review` (website) and `release/1.3.0` (app). This is the
+rest, adjusted for those fixes. **Order matters:** (A) before any ad spend,
+(B) on dev before the device pass, (C) the prod flip in one sitting.
+
+### (A) Before any ad spend
+- [ ] Review and merge `fix/prod-readiness-review` (CI green: `site`,
+      `functions`, `backend`, `e2e`), and push the app's `release/1.3.0`
+      commits. **No new migrations** came with the fixes.
+- [ ] Testimonials and stats: confirmed real (2026-10-07). File the evidence
+      somewhere you can produce it (consent, the original messages, how
+      "83%" and "two weeks" were measured).
+- [ ] B-13: check the annual price in App Store Connect against the web's
+      $59.99 ("Three prices must always agree", below).
+- [ ] Vercel: add `open.kinderwell.app` + the Namecheap CNAME; the AASA
+      `curl` checks pass on **both** hosts — **≥ 24 h before any v1.3.0
+      install** (§8.9 step 1).
+- [ ] Meta (§5): Business Manager "Kinderwell" + second admin, domain
+      verified, BM-owned pixel → `NEXT_PUBLIC_META_PIXEL_ID`, CAPI token →
+      `META_CAPI_TOKEN`; ids in OPS_RUNBOOK §2. Test run with
+      `META_TEST_EVENT_CODE` (Lead, InitiateCheckout and Purchase each
+      deduplicated browser + server), then **delete** the secret.
+- [ ] Vercel: delete `NEXT_PUBLIC_DEV_SKIP`; a Firewall rate-limit rule on
+      both `/api` routes; `NEXT_PUBLIC_DODO_BUSINESS_ID`;
+      `NEXT_PUBLIC_DODO_ENV` per §6; `FUNNEL_PROXY_SECRET`.
+- [ ] Dodo: live products (new `pdt_` ids), live key, new webhook endpoint +
+      secret → **prod** ref; statement descriptor `KINDERWELL`;
+      renewal-reminder and lifecycle emails ON (the refund policy promises a
+      reminder before annual renewals); webhook failure alerts ON; the
+      customer portal shows Cancel.
+- [ ] Resend: click/open tracking OFF on the prod sending domain too.
+- [ ] Superwall `subscription_gate`: "Use a different account" → custom
+      action `switch_account`, published.
+- [ ] PostHog: the two alerts the app's OPS_STATE marks "required before ad
+      spend" (`paywall_skipped_by_superwall` > 1%, purchases −50% day over
+      day). Web and server events now carry `environment`/`app_env`/`surface`,
+      so filter on `environment = prod`.
+- [ ] Sentry sourcemaps for 1.3.0 build 12.
+- [ ] App v1.3.0 live (the app's `docs/releases/v1.3.0.md`): `release/1.3.0` →
+      `main`, build from `main`, the first EAS build's entitlements show both
+      `applinks:` domains, TestFlight upgrade test, App Review note about the
+      setup link, sandbox tester under the post-transfer account, phased
+      release on.
+- [ ] Device pass on a real iPhone with a card in Wallet, in Safari **and**
+      from an Instagram ad preview: quiz → pay → Get Kinderwell → install →
+      Paste → Learn; the email's "Open Kinderwell" opens the app; the link
+      page's button opens the app; `/manage` opens Safari; card entry is
+      painless in-app; "Prefer Apple Pay? Copy a link for Safari" copies (or
+      offers press-and-hold) and the link carries the plan into Safari;
+      Instagram's own "Open in browser" shows the "saved, just not in this
+      browser" card; the "tapped Get Kinderwell before the link arrived" path
+      (review FE-10: does the App Store open inside Instagram's WebView?).
+- [x] Legal (website): privacy policy and terms updated 2026-10-07 to what
+      the site does (review §8). One support address,
+      `kinderwellteam@gmail.com`. No postal address is published, as before.
+- [ ] Legal (app, owner-only): mirror the site's changes in the app's
+      `legal/` docs. Their privacy policy also says PostHog receives your
+      email, which the app does not do (INVARIANTS #8); correct that line.
+- [ ] OPS_STATE / OPS_RUNBOOK rows updated as each step lands.
+
+### (B) Dev, before the device pass
+- [ ] Dev Auth (§2.2): Magic Link **and** Confirm signup templates show
+      `{{ .Token }}`; OTP length 6; SMTP via Resend; 100 emails/h; 60 s
+      interval. Confirm each; test once with a never-used address.
+- [ ] Dev secrets: `FUNNEL_PROXY_SECRET` (Supabase **and** Vercel, then
+      redeploy Vercel), `UNSUBSCRIBE_SECRET`, `MAILING_ADDRESS` (§2.4). The
+      dev migrations are already all applied (checked 2026-10-07).
+- [ ] `scripts/deploy-functions.sh capture-email create-checkout dodo-webhook winback-sweep unsubscribe resume`
+      from a green `main` — **not** `mint-handoff` yet.
+- [ ] Deploy the app's new `delete-account` to dev (needs `DODO_API_KEY`,
+      `DODO_ENV`; dev runs the 2026-07-11 version) and re-run E2E flow 6
+      against it (review XR-18).
+- [ ] Schedule the hourly sweep (§2.5, header form).
+- [ ] `mint-handoff` to dev only for the one end-to-end handoff test, while
+      no ads run (it switches the live site's links on).
+- [ ] During the test purchase, capture the payloads
+      `supabase/functions/_fixtures/dodo/README.md` lists, plus one
+      `subscription.renewed` (test mode can force a renewal) and the
+      `GET /payments/{id}` of a refunded payment; swap them in and run CI
+      (review MP-13: `is_partial`, `refunds[]`, `total_amount`, `metadata` on
+      `renewed`, the envelope `timestamp` and cents amounts are all still read
+      from Dodo's schema, not from a real delivery).
+- [ ] Preview EAS build, ad hoc install, the app's acceptance tests incl.
+      refund, cancel, delete-as-web-subscriber, existing-user-buys-on-web (no
+      one-tap link, email code works, owner alert arrives); the
+      `user_profiles` row and "no questionnaire".
+- [ ] Decide P3-23 (ages 0–1 / 13–17), P3-21 (`whsec_` prefix).
+
+### (C) The prod flip, one sitting, in this order
+1. [ ] `~/mamalearn/scripts/check-migration-parity.sh` (now also compares
+       the access-rule case table) → `scripts/db-push-prod.sh` applies **all
+       five** web migrations (prod is at `20260710010000`).
+2. [ ] Prod secrets: the full §2.4 list (`DODO_ENV=live`, live ids/key/secret,
+       `FUNNEL_PROXY_SECRET`, `UNSUBSCRIBE_SECRET`, `MAILING_ADDRESS`,
+       `SITE_URL`, Resend, Meta, PostHog, `SWEEP_SECRET`, `APP_STORE_URL`,
+       `PRICE_*`, `SUPPORT_EMAIL`, `ALERT_EMAIL`).
+3. [ ] `delete-account` → prod (after the migrations, never before);
+       `redeem-handoff --no-verify-jwt` → prod; `supabase functions list`
+       shows the right JWT settings.
+4. [ ] Prod Auth: OTP 6, both templates, SMTP with a separate prod Resend key,
+       100/h, 60 s.
+5. [ ] Website functions → prod with explicit names (§2.3); `mint-handoff`
+       last and only once 1.3.0 is live.
+6. [ ] Dodo live webhook endpoint → prod ref, confirmed by one delivery.
+7. [ ] Vercel Production env → prod URL/key, `NEXT_PUBLIC_SITE_URL`,
+       `NEXT_PUBLIC_DODO_ENV=live`, delete `NEXT_PUBLIC_DEV_SKIP`, redeploy;
+       `curl -sI https://kinderwell.app/manage` → `customer.dodopayments.com`.
+       Don't pause between 5 and 7.
+8. [ ] Hourly sweep scheduled on prod.
+9. [ ] One real-card purchase → refund → `revoked` + Dodo cancelled → replay →
+       no resurrection → re-buy with the same email → `active` on the new
+       subscription id; Apple Pay visible with a card in Wallet; one
+       deduplicated Purchase in Events Manager.
+10. [ ] OPS_STATE rows + OPS_RUNBOOK §1 updated.
+
 ## 9. Production flip (only after §7 passes)
 
 - [x] **Dodo KYC/business verification APPROVED** (owner-reported 2026-09-28).
@@ -458,10 +640,13 @@ website. Dev first, then the same on prod.
 - [ ] Supabase prod: migration via `scripts/db-push-prod.sh`; enable Email OTP;
       apply ALL FIVE migrations (`20260918…_web2app`, `20260928…_email_opt_outs`,
       `20260930…_webhook_hardening`, `20261005…_event_ordering`, `20261006…_handoff_keys`) BEFORE deploying the functions;
-      deploy all seven functions against prod (mint-handoff since 2026-10-06); set secrets with `DODO_ENV=live`,
-      the live key/product IDs/webhook secret, and `SITE_URL=https://kinderwell.app`.
-- [ ] Vercel Production env vars: prod Supabase URL + anon key, and
-      `NEXT_PUBLIC_SITE_URL=https://kinderwell.app`.
+      deploy the functions against prod with explicit names (`scripts/deploy-functions.sh`,
+      `mint-handoff` last and only once 1.3.0 is live); set secrets with `DODO_ENV=live`,
+      the live key/product IDs/webhook secret, and `SITE_URL=https://kinderwell.app`
+      — the full list is §2.4. The ordered one-sitting version is §8.10 (C).
+- [ ] Vercel Production env vars: prod Supabase URL + anon key,
+      `NEXT_PUBLIC_SITE_URL=https://kinderwell.app`, `NEXT_PUBLIC_DODO_ENV=live`
+      (then `curl -sI https://kinderwell.app/manage` → `customer.dodopayments.com`).
 - [ ] Confirm the live webhook URL in Dodo points at the PROD Supabase project
       (a prod webhook still aimed at dev is the classic silent failure).
 - [ ] One real purchase with a real card (refund yourself after) — full §7
@@ -491,3 +676,9 @@ The owner steps they need are in `OPS_RUNBOOK.md` §1b.1.
 
 `NEXT_PUBLIC_PRICE_*` (display) · Dodo products (charged) · App Store IAP
 (parity policy). Change one → change all three the same day.
+
+⚠️ **Open (review 2026-10-07, B-13):** the app's docs give the App Store
+annual price as **$69.99** (`~/mamalearn/docs/RELEASE_CHECKLIST.md`,
+`STOREKIT_SETUP_GUIDE.md`); the web charges **$59.99**. Owner to check App
+Store Connect and settle it (deferred 2026-10-07). Until then the three do
+not provably agree.

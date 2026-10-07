@@ -90,6 +90,10 @@ jobs:
       NEXT_PUBLIC_DODO_ENV: test
       # A fake id so the pixel snippet is built in; the tests replace Meta's script.
       NEXT_PUBLIC_META_PIXEL_ID: '000000000000000'
+      # A fake key so PostHog is built in and really sends (to a stub): B1
+      # checks that no answer, name or email is in what it sends, and fails
+      # if nothing was sent at all.
+      NEXT_PUBLIC_POSTHOG_KEY: phc_…_placeholder
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

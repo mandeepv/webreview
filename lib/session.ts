@@ -9,6 +9,8 @@ import { RESUME_COOKIE } from './resume-cookie';
 export type Answers = Record<string, string | string[] | number>;
 
 export interface FunnelSession {
+  /** Shape version of what is stored under KEY; bump it with a migration in readStored(). */
+  v?: 1;
   id: string;
   answers: Answers;
   utm: Record<string, string>;
@@ -28,9 +30,47 @@ const KEY = 'kw_funnel_session';
 // /email and /offer don't post two different ids (P2-8).
 let memory: FunnelSession | null = null;
 
+/**
+ * A v4 UUID. crypto.randomUUID only exists from iOS 15.4 / Safari 15.4, and
+ * older iPhones still reach us through in-app browsers (review P3);
+ * getRandomValues is far older and enough for the same result.
+ */
+export function uuid(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * The stored session, if it is one this code can use (review P3: it was read
+ * unchecked, so a corrupt or older shape crashed whichever page touched the
+ * missing field). Sessions from before `v` existed have the v1 shape.
+ */
+function readStored(raw: string): FunnelSession | null {
+  const s = JSON.parse(raw) as Partial<FunnelSession>;
+  if (!isObject(s) || (s.v !== undefined && s.v !== 1)) return null;
+  if (typeof s.id !== 'string' || !UUID_RE.test(s.id) || !isObject(s.answers) || !isObject(s.utm)) return null;
+  return {
+    ...s,
+    v: 1,
+    landingVariant: typeof s.landingVariant === 'string' ? s.landingVariant : 'default',
+    emailCaptured: s.emailCaptured === true,
+    userId: typeof s.userId === 'string' ? s.userId : null,
+    email: typeof s.email === 'string' ? s.email : null,
+    startedAt: typeof s.startedAt === 'number' ? s.startedAt : Date.now(),
+  } as FunnelSession;
+}
+
 function newSession(): FunnelSession {
   return {
-    id: crypto.randomUUID(),
+    v: 1,
+    id: uuid(),
     answers: {},
     utm: {},
     landingVariant: 'default',
@@ -50,7 +90,8 @@ export function getSession(): FunnelSession {
   }
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return (memory = JSON.parse(raw) as FunnelSession);
+    const stored = raw ? readStored(raw) : null;
+    if (stored) return (memory = stored);
   } catch {
     // Corrupt or blocked storage → fall through; losing quiz answers beats a crashed funnel.
   }
@@ -85,6 +126,7 @@ function consumeResumeCookie(): FunnelSession | null {
     };
     if (!p.sessionId || !p.userId || !p.email) return null;
     return {
+      v: 1,
       id: p.sessionId,
       answers: p.answers ?? {},
       utm: p.utm ?? {},
@@ -133,6 +175,15 @@ export function captureAttribution(searchParams: URLSearchParams): void {
   }
   if (Object.keys(utm).length === 0) return;
   const s = getSession();
+  // A visit tagged ONLY with ?a= (an internal link to a landing variant, not
+  // an ad click) changes the variant and nothing else: it used to wipe the
+  // stored utm_* of the click that brought them (review P3).
+  if (Object.keys(utm).length === 1 && utm.a) {
+    s.utm = { ...s.utm, a: utm.a };
+    s.landingVariant = utm.a;
+    save(s);
+    return;
+  }
   if (utm.fbclid && utm.fbclid !== s.utm.fbclid) s.fbclidAt = Date.now();
   // A later visit tagged only with ?a= or utm_* must not erase the stored
   // fbclid — once Safari expires the _fbc cookie it's the only way to
@@ -141,6 +192,27 @@ export function captureAttribution(searchParams: URLSearchParams): void {
   s.utm = utm;
   if (utm.a) s.landingVariant = utm.a;
   save(s);
+}
+
+/**
+ * The same quiz under a new session id. capture-email never moves a session
+ * that belongs to one email onto another (review 2026-10-07, B-3) and
+ * answers 409 instead — e.g. when a first capture reached the server but its
+ * answer never reached the page, and the parent then corrects the address.
+ * Answers and attribution carry over; only the id (and the email) is new.
+ */
+export function restartSession(): FunnelSession {
+  const old = getSession();
+  const s: FunnelSession = {
+    ...newSession(),
+    answers: old.answers,
+    utm: old.utm,
+    landingVariant: old.landingVariant,
+    startedAt: old.startedAt,
+    ...(old.fbclidAt ? { fbclidAt: old.fbclidAt } : {}),
+  };
+  save(s);
+  return s;
 }
 
 /**

@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "dodopayments-checkout": "^1.9.9",
-    "lucide-react": "^1.47.0",
     "next": "^15.1.0",
     "posthog-js": "^1.200.0",
     "qrcode": "^1.5.4",

@@ -2,16 +2,22 @@
 // slug ("whining") or a generic fallback on the plan and offer pages.
 import { describe, expect, it } from 'vitest';
 import { QUIZ_STEPS, stepIndexById } from './questions';
-import { calculatingStages, familySummary, offerEcho, recapChips, snapshotRows } from './scoring';
+import { APP_LESSON_COUNT, calculatingStages, familySummary, offerEcho, recapChips, snapshotRows } from './scoring';
 import type { Answers } from '../session';
 
 const optionValues = (id: string) => QUIZ_STEPS[stepIndexById(id)].options!.map((o) => o.value);
 
 describe('plan copy covers every quiz option', () => {
-  it.each(optionValues('challenges'))('challenge "%s" has a short label and a first lesson', (c) => {
+  it.each(optionValues('challenges'))('challenge "%s" has a short label', (c) => {
     expect(recapChips({ challenges: [c] })).toHaveLength(2); // the label + the family line
-    const plan = snapshotRows({ challenges: [c] }).find((r) => r.label === 'Your plan')!;
-    expect(plan.value).not.toContain('Your First Win');
+  });
+
+  it('the plan promises the app’s real path: its lesson count, no named lesson that doesn’t exist (B-12)', () => {
+    for (const c of optionValues('challenges')) {
+      const plan = snapshotRows({ challenges: [c] }).find((r) => r.label === 'Your plan')!;
+      expect(plan.value).toBe(`${APP_LESSON_COUNT} lessons, starting with the foundations`);
+    }
+    expect(APP_LESSON_COUNT).toBe(13); // mamalearn src/lessons/units.ts LESSON_ORDER on release/1.3.0
   });
 
   it.each(optionValues('goals'))('goal "%s" has a short label', (g) => {

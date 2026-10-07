@@ -17,14 +17,46 @@ export const STATUS_BY_EVENT: Record<string, string> = {
 const ENTITLED_STATUSES = ['active', 'past_due', 'cancelled'];
 
 /**
- * The access rule — the same one the iOS app applies: entitled while the
- * status is active, past_due or cancelled AND the paid period has not ended.
- * `revoked` (refund/chargeback) and `expired` never have access.
+ * How long past current_period_end an `active` row keeps access: its renewal
+ * webhook is late, not missing (the sweep heals or expires it after 5 days).
+ * The app's ACTIVE_LATE_RENEWAL_GRACE_MS (src/store/webEntitlement.ts) and
+ * redeem-handoff's copy use the same 6 days.
  */
-export function hasAccess(
-  row: { status: string; current_period_end: string | null } | null | undefined,
-  now: Date
-): boolean {
+export const ACTIVE_LATE_RENEWAL_GRACE_MS = 6 * 24 * 3600 * 1000;
+
+type AccessRow = { status: string; current_period_end: string | null } | null | undefined;
+
+/**
+ * The access rule — THE SAME ONE the iOS app (isWebEntitled) and the app's
+ * redeem-handoff apply: entitled while the status is active, past_due or
+ * cancelled AND the paid period has not ended, with an `active` row keeping
+ * 6 days past it for a late renewal webhook. `revoked` (refund/chargeback)
+ * and `expired` never have access. The three copies are pinned by one table
+ * of cases, byte-identical in both repos (access_rule_cases.json; the app's
+ * scripts/check-migration-parity.sh compares it).
+ *
+ * It used to have no grace here (review 2026-10-07, AP-3/XR-3): during a late
+ * renewal the app still let the customer in while create-checkout's
+ * duplicate guard let them buy a second subscription.
+ */
+export function hasAccess(row: AccessRow, now: Date): boolean {
+  if (!row || !ENTITLED_STATUSES.includes(row.status) || !row.current_period_end) return false;
+  const end = new Date(row.current_period_end).getTime();
+  if (!Number.isFinite(end)) return false;
+  const grace = row.status === 'active' ? ACTIVE_LATE_RENEWAL_GRACE_MS : 0;
+  return end + grace > now.getTime();
+}
+
+/**
+ * Paid through `now` by the dates alone, with no late-renewal grace. Only the
+ * webhook's duplicate-vs-replacement decision uses it: a second subscription
+ * that arrives while the one on file is past its period is treated as a
+ * replacement. If the first one's cancellation webhook went missing, calling
+ * the second a duplicate would cancel the customer's only live subscription.
+ * Should the first renew after all, its `renewed` then arrives as a
+ * duplicate and is cancelled (B-4).
+ */
+export function isPaidThrough(row: AccessRow, now: Date): boolean {
   return (
     !!row &&
     ENTITLED_STATUSES.includes(row.status) &&
@@ -108,7 +140,7 @@ export function decideSubscriptionWrite(
       // overwrite the customer's current one (P1-3).
       return { kind: 'ignore', reason: `${event.type} for ${incoming}, but ${onFile} is on file` };
     }
-    if (hasAccess(current!, now)) {
+    if (isPaidThrough(current!, now)) {
       return {
         kind: 'duplicate',
         reason: `${incoming} activated while ${onFile} is still ${current!.status} until ${current!.current_period_end}`,
@@ -123,7 +155,14 @@ export function decideSubscriptionWrite(
 
   if (status === 'active') {
     if (incomingEnd) {
-      return write(status, incomingEnd, differentSubscription, null);
+      // Never EARLIER for the same subscription (review 2026-10-07, MP-6):
+      // a renewal or a re-sent activation whose next_billing_date is older
+      // than what is on file (a payload shape we haven't seen live yet, or a
+      // stale copy inside the ordering window) must not cut paid-for time.
+      // A plan change is the one event allowed to move it earlier — annual
+      // to monthly really does bring the next charge forward.
+      const end = event.type === 'subscription.plan_changed' ? incomingEnd : latest(existingEnd, incomingEnd)!;
+      return write(status, end, differentSubscription, null);
     }
     // Never write null on an activating event — the app would deny a paying
     // customer and the checkout dup guard would open (P1-4).

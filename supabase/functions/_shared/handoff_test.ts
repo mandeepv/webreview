@@ -5,7 +5,14 @@ import { decideMint, handoffLink, KEY_RE, MINT_WINDOW_MS, newHandoffKey, sha256H
 const NOW = new Date('2026-10-06T12:00:00.000Z');
 const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
 const HASH = 'a'.repeat(64);
-const PAID = { user_id: 'u1', handoff_nonce_hash: HASH, purchased_at: ago(60_000) };
+// The funnel created the account moments before the session row, half an hour ago.
+const PAID = {
+  user_id: 'u1',
+  handoff_nonce_hash: HASH,
+  purchased_at: ago(60_000),
+  created_at: ago(30 * 60_000),
+  account_created_at: ago(30 * 60_000 + 500),
+};
 const ACTIVE = { status: 'active', current_period_end: '2027-10-06T12:00:00.000Z' };
 
 Deno.test('a key is 43 base64url characters from 32 random bytes, and never repeats', () => {
@@ -47,6 +54,21 @@ Deno.test('decideMint: no session, no nonce on file, or the wrong nonce all look
 
 Deno.test('decideMint: before the webhook has recorded the purchase, the page should retry', () => {
   assertEquals(decideMint({ ...PAID, purchased_at: null }, HASH, null, NOW), 'not_ready');
+  // B-3: the paid checkout's nonce hash reaches the session WITH the
+  // purchase, so before it there is none yet — still "retry", not "no".
+  assertEquals(decideMint({ ...PAID, purchased_at: null, handoff_nonce_hash: null }, HASH, null, NOW), 'not_ready');
+});
+
+Deno.test('decideMint: a purchase on an account that predates the session never mints (B-1)', () => {
+  // Someone typed an existing customer's email and paid: they must not get a
+  // sign-in key for that customer's account.
+  const existing = { ...PAID, account_created_at: ago(30 * 24 * 3600 * 1000) };
+  assertEquals(decideMint(existing, HASH, ACTIVE, NOW), 'not_found');
+  // Unknown account age: no proof, no key.
+  assertEquals(decideMint({ ...PAID, account_created_at: null }, HASH, ACTIVE, NOW), 'not_found');
+  assertEquals(decideMint({ ...PAID, created_at: null }, HASH, ACTIVE, NOW), 'not_found');
+  // Before the purchase lands the answer is still "retry", whoever's account it is.
+  assertEquals(decideMint({ ...existing, purchased_at: null }, HASH, null, NOW), 'not_ready');
 });
 
 Deno.test('decideMint: more than 24 hours after the purchase, no more welcome-page keys', () => {
@@ -57,7 +79,9 @@ Deno.test('decideMint: more than 24 hours after the purchase, no more welcome-pa
 Deno.test('decideMint: a refunded, expired or missing entitlement gets no key', () => {
   assertEquals(decideMint(PAID, HASH, { ...ACTIVE, status: 'revoked' }, NOW), 'not_entitled');
   assertEquals(decideMint(PAID, HASH, { ...ACTIVE, status: 'expired' }, NOW), 'not_entitled');
-  assertEquals(decideMint(PAID, HASH, { ...ACTIVE, current_period_end: ago(1000) }, NOW), 'not_entitled');
+  // Past the period AND the late-renewal grace (an active row keeps 6 days, as in the app).
+  assertEquals(decideMint(PAID, HASH, { ...ACTIVE, current_period_end: ago(7 * 24 * 3600 * 1000) }, NOW), 'not_entitled');
+  assertEquals(decideMint(PAID, HASH, { status: 'cancelled', current_period_end: ago(1000) }, NOW), 'not_entitled');
   assertEquals(decideMint(PAID, HASH, null, NOW), 'not_entitled');
 });
 

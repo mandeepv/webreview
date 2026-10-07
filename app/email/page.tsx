@@ -10,7 +10,7 @@ import {
   Shell,
 } from '@/components/ui';
 import { config } from '@/lib/config';
-import { getSession, readMetaCookies, save } from '@/lib/session';
+import { getSession, readMetaCookies, restartSession, save } from '@/lib/session';
 import { identify, track } from '@/lib/analytics';
 import { leadEventId, pixel, setPixelUserData } from '@/lib/meta';
 import { EMAIL_POSITION, JOURNEY_LENGTH } from '@/lib/quiz/questions';
@@ -48,24 +48,39 @@ export default function EmailPage() {
     if (busy) return; // Enter + tap, or a double tap: one capture only (P2-7d)
     setBusy(true);
     setError(null);
-    const s = getSession();
+    let s = getSession();
     try {
-      const res = await fetch('/api/capture-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email,
-          hp,
-          sessionId: s.id,
-          answers: s.answers,
-          utm: s.utm,
-          landingVariant: s.landingVariant,
-          // Match keys for the server-side Lead (P2-2).
-          meta: readMetaCookies(),
-        }),
-      });
+      const post = () =>
+        fetch('/api/capture-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            hp,
+            sessionId: s.id,
+            answers: s.answers,
+            utm: s.utm,
+            landingVariant: s.landingVariant,
+            // Match keys for the server-side Lead (P2-2).
+            meta: readMetaCookies(),
+          }),
+        });
+      let res = await post();
+      if (res.status === 409) {
+        // This session already belongs to another email (a capture that
+        // reached the server but not this page). The server never moves it
+        // (B-3): carry on under a fresh session id with the same answers.
+        s = restartSession();
+        res = await post();
+      }
       if (res.status === 429) {
-        setError('Too many attempts. Please wait a minute and try again.');
+        // capture-email says which limit: the per-address one lasts an hour.
+        const { retry } = (await res.json().catch(() => ({}))) as { retry?: string };
+        setError(
+          retry === 'hour'
+            ? 'Too many attempts with this email. Please try again in an hour, or use another address.'
+            : 'Too many attempts. Please wait a minute and try again.'
+        );
         setBusy(false);
         return;
       }
@@ -119,6 +134,7 @@ export default function EmailPage() {
           <input
             type="email"
             inputMode="email"
+            aria-label="Your email address"
             autoComplete="email"
             placeholder="you@example.com"
             value={email}

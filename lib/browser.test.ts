@@ -11,10 +11,12 @@ describe('paymentStateFrom', () => {
   it('pending-type statuses are processing', () => {
     for (const s of ['pending', 'processing', 'requires_customer_action']) expect(paymentStateFrom(s)).toBe('processing');
   });
-  it('a direct visit is unknown, anything else failed', () => {
+  it('only statuses that mean no payment are failed', () => {
+    for (const s of ['failed', 'cancelled', 'expired', 'requires_payment_method']) expect(paymentStateFrom(s)).toBe('failed');
+  });
+  it('a direct visit, or a status we do not know, claims nothing either way (FE-8)', () => {
     expect(paymentStateFrom(null)).toBe('unknown');
-    expect(paymentStateFrom('failed')).toBe('failed');
-    expect(paymentStateFrom('cancelled')).toBe('failed');
+    for (const s of ['on_hold', 'partially_captured', 'Active', 'something_new']) expect(paymentStateFrom(s)).toBe('unknown');
   });
 });
 
@@ -22,6 +24,9 @@ describe('isInAppBrowser', () => {
   it('detects Instagram and Facebook iOS browsers', () => {
     expect(isInAppBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Instagram 350.0')).toBe(true);
     expect(isInAppBrowser('Mozilla/5.0 (iPhone) [FBAN/FBIOS;FBAV/480.0]')).toBe(true);
+  });
+  it('detects Threads, whose browser calls itself Barcelona (P3)', () => {
+    expect(isInAppBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Barcelona 350.0.0.20.95')).toBe(true);
   });
   it('leaves Safari alone', () => {
     expect(isInAppBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Version/18.0 Mobile/15E148 Safari/604.1')).toBe(false);

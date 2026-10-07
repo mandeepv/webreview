@@ -100,7 +100,17 @@ itest('E5: one address can be captured at most 5 times an hour', async () => {
   await awayFromWindowEdge(3600, 20);
   const email = freshEmail();
   for (let i = 1; i <= 5; i++) assertEquals((await capture({ email })).status, 200, `capture ${i}`);
-  assertEquals((await capture({ email })).json.error, 'rate_limited');
+  // The page tells them how long: an hour for this address (IN-5).
+  assertEquals((await capture({ email })).json, { error: 'rate_limited', retry: 'hour' });
+});
+
+itest('E5c: honeypot posts never use up a real person’s allowance for their address (IN-5)', async () => {
+  fake.install();
+  await awayFromWindowEdge(3600, 20);
+  const email = freshEmail();
+  for (let i = 0; i < 8; i++) assertEquals((await capture({ email, hp: 'bot' })).status, 200);
+  assertEquals((await capture({ email })).status, 200, 'a bot locked the address out');
+  assert(await userIdFor(email));
 });
 
 itest('E5b: one IP can capture at most 10 emails a minute', async () => {
@@ -108,7 +118,17 @@ itest('E5b: one IP can capture at most 10 emails a minute', async () => {
   await awayFromWindowEdge(60);
   const ip = randomIp();
   for (let i = 1; i <= 10; i++) assertEquals((await capture({ client_ip: ip })).status, 200, `capture ${i}`);
-  assertEquals((await capture({ client_ip: ip })).json.error, 'rate_limited');
+  assertEquals((await capture({ client_ip: ip })).json, { error: 'rate_limited', retry: 'minute' });
+});
+
+itest('E5d: IPv6 addresses in one /64 share the per-IP limit (IN-7)', async () => {
+  fake.install();
+  await awayFromWindowEdge(60);
+  const prefix = `2001:db8:${Math.floor(Math.random() * 0xffff).toString(16)}:${Math.floor(Math.random() * 0xffff).toString(16)}`;
+  for (let i = 1; i <= 10; i++) {
+    assertEquals((await capture({ client_ip: `${prefix}:0:0:0:${i.toString(16)}` })).status, 200, `capture ${i}`);
+  }
+  assertEquals((await capture({ client_ip: `${prefix}:dead:beef:0:1` })).json.error, 'rate_limited');
 });
 
 itest('E6: the waitlist keeps only the reason and child age, creates no account, and cannot be overwritten', async () => {
@@ -178,4 +198,21 @@ itest('E8b: no Lead for a honeypot bot or a waitlist signup', async () => {
   await capture({ hp: 'bot' });
   await capture({ waitlist: 'android' });
   assertEquals(fake.capiEvents('Lead').length, 0);
+});
+
+itest('E9: a session that belongs to one email is never moved to another (B-3)', async () => {
+  fake.install();
+  const sessionId = crypto.randomUUID();
+  const first = await capture({ sessionId });
+  assertEquals(first.status, 200);
+
+  // Someone who learned the session id posts it with their own address.
+  const other = freshEmail();
+  const second = await capture({ sessionId, email: other });
+  assertEquals(second, { status: 409, json: { error: 'session_taken' } });
+  assertEquals((await session(sessionId))?.user_id, first.json.userId);
+  assertEquals(await userIdFor(other), null, 'an account was created for the refused email');
+
+  // The same email again is fine (a retry, or answers updated).
+  assertEquals((await capture({ sessionId, email: (await db().auth.admin.getUserById(first.json.userId as string)).data.user!.email })).status, 200);
 });

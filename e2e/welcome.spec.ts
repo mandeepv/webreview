@@ -1,5 +1,6 @@
 // B2: the purchase page. Meta's pixel script is replaced by a recorder so the
 // test sees exactly what the page asks the pixel to send, with no network.
+import { ANALYTICS_HOSTS, livePosthog, outboundText } from './outbound';
 import { expect, test } from '@playwright/test';
 
 const SESSION = {
@@ -23,6 +24,9 @@ const PIXEL_RECORDER = `
 test.beforeEach(async ({ page }) => {
   await page.route(/connect\.facebook\.net/, (r) => r.fulfill({ contentType: 'application/javascript', body: PIXEL_RECORDER }));
   await page.route(/facebook\.com|posthog\.com/, (r) => r.fulfill({ status: 204, body: '' }));
+  // PostHog really captures (to a stub), so B3's "the link reaches no
+  // analytics" checks what PostHog would send, not an empty list.
+  await livePosthog(page);
   await page.addInitScript((s) => {
     if (sessionStorage.getItem('e2e-seeded')) return; // seed once; the page then owns storage
     sessionStorage.setItem('e2e-seeded', '1');
@@ -113,7 +117,8 @@ test('B3: Get Kinderwell copies the sign-in link, then opens the App Store; the 
   const minted: unknown[] = [];
   const outside: string[] = [];
   page.on('request', (r) => {
-    if (/facebook|posthog/.test(r.url())) outside.push(r.url() + (r.postData() ?? ''));
+    // Decoded: PostHog gzips its batches, so raw text would see nothing.
+    if (ANALYTICS_HOSTS.test(r.url())) outside.push(outboundText(r));
   });
   await page.route('**/api/mint-handoff', (r) => {
     minted.push(r.request().postDataJSON());
@@ -131,6 +136,8 @@ test('B3: Get Kinderwell copies the sign-in link, then opens the App Store; the 
   ]);
   expect(await copied(page)).toEqual([LINK]);
   expect(outside.filter((u) => u.includes('K'.repeat(43)))).toEqual([]);
+  // Nor any pixel call (the recorder keeps them all).
+  expect(JSON.stringify(await page.evaluate(() => (window as any).__fbqCalls ?? []))).not.toContain('K'.repeat(43)); // eslint-disable-line @typescript-eslint/no-explicit-any
 });
 
 test('B3b: a tap before the link is back waits for it, copies it, then opens the App Store', async ({ page }) => {

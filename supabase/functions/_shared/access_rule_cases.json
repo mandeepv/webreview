@@ -1,0 +1,108 @@
+{
+  "_about": [
+    "THE web access rule, as cases: given an entitlements row and a moment, is the buyer entitled?",
+    "Three copies of the rule must agree: the website's hasAccess (kinderwell-web supabase/functions/_shared/entitlement.ts),",
+    "the app's isWebEntitled (mamalearn src/store/webEntitlement.ts) and redeem-handoff's hasWebAccess (mamalearn",
+    "supabase/functions/redeem-handoff/handler.ts). Each repo runs its copies over THIS file; the two repos keep it",
+    "byte-identical, and the app's scripts/check-migration-parity.sh fails if they differ (review 2026-10-07, AP-3/XR-3).",
+    "hours_after_end: how long after current_period_end the moment is (negative = before it; null = no end on file)."
+  ],
+  "cases": [
+    {
+      "status": "active",
+      "hours_after_end": -720,
+      "entitled": true,
+      "why": "inside the paid period"
+    },
+    {
+      "status": "active",
+      "hours_after_end": -1,
+      "entitled": true,
+      "why": "the last hour of the period"
+    },
+    {
+      "status": "active",
+      "hours_after_end": 1,
+      "entitled": true,
+      "why": "renewal webhook late: billed, row not yet moved"
+    },
+    {
+      "status": "active",
+      "hours_after_end": 72,
+      "entitled": true,
+      "why": "still inside the 6-day late-renewal grace"
+    },
+    {
+      "status": "active",
+      "hours_after_end": 143,
+      "entitled": true,
+      "why": "the last hour of the grace"
+    },
+    {
+      "status": "active",
+      "hours_after_end": 144,
+      "entitled": false,
+      "why": "6 days: the grace is over"
+    },
+    {
+      "status": "active",
+      "hours_after_end": 720,
+      "entitled": false,
+      "why": "long past"
+    },
+    {
+      "status": "active",
+      "hours_after_end": null,
+      "entitled": false,
+      "why": "no period end on file"
+    },
+    {
+      "status": "past_due",
+      "hours_after_end": -1,
+      "entitled": true,
+      "why": "card retrying, inside the floored period"
+    },
+    {
+      "status": "past_due",
+      "hours_after_end": 1,
+      "entitled": false,
+      "why": "past_due gets no grace: the date is the answer"
+    },
+    {
+      "status": "cancelled",
+      "hours_after_end": -1,
+      "entitled": true,
+      "why": "cancelled runs to the end of the paid period"
+    },
+    {
+      "status": "cancelled",
+      "hours_after_end": 0,
+      "entitled": false,
+      "why": "the period has ended"
+    },
+    {
+      "status": "cancelled",
+      "hours_after_end": 1,
+      "entitled": false,
+      "why": "cancelled gets no grace"
+    },
+    {
+      "status": "expired",
+      "hours_after_end": -720,
+      "entitled": false,
+      "why": "expired never grants access"
+    },
+    {
+      "status": "revoked",
+      "hours_after_end": -720,
+      "entitled": false,
+      "why": "a refund or chargeback never grants access"
+    },
+    {
+      "status": "paused",
+      "hours_after_end": -720,
+      "entitled": false,
+      "why": "a status the rule doesn't know grants nothing"
+    }
+  ]
+}

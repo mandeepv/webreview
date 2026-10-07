@@ -22,6 +22,15 @@ type DodoModule = typeof import('dodopayments-checkout');
 
 let sdk: Promise<DodoModule> | null = null;
 
+/**
+ * How long the overlay may stay silent before we assume its iframe never
+ * loaded (review 2026-10-07, FE-3). The SDK's overlay is a TRANSPARENT
+ * full-screen iframe; if it is blocked or never loads, it still sits over
+ * the page and swallows every tap — no way out but a reload. A working
+ * overlay talks within a second or two (checkout.opened, checkout.resize).
+ */
+export const OVERLAY_WATCHDOG_MS = 15_000;
+
 /** Starts downloading the SDK. Call on /offer mount so the first tap only waits for the session (P2-14). */
 export function preloadCheckout(): void {
   sdk ??= import('dodopayments-checkout');
@@ -63,10 +72,24 @@ export async function openOverlayCheckout(
     if (!DodoPayments?.Checkout?.open) return false;
 
     let failed = false;
+    let heard = false;
+    // Silence means the overlay never loaded: take it down and send the
+    // buyer to the same checkout on Dodo's hosted page (same session, so
+    // nobody can pay twice).
+    const watchdog = window.setTimeout(() => {
+      if (heard) return;
+      track('web_funnel_error', { where: 'checkout_overlay_silent' });
+      closeOverlayCheckout();
+      window.location.assign(checkoutUrl);
+    }, OVERLAY_WATCHDOG_MS);
     DodoPayments.Initialize({
       mode: modeFor(checkoutUrl),
       displayType: 'overlay',
       onEvent: (event: CheckoutEvent) => {
+        if (!heard) {
+          heard = true;
+          window.clearTimeout(watchdog);
+        }
         switch (event.event_type) {
           case 'checkout.opened':
             track('web_funnel_checkout_overlay_opened');

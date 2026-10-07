@@ -34,17 +34,15 @@ const MOOD_SHORT: Record<string, string> = {
   overwhelmed: 'underwater days',
 };
 
-// VBSnapshotScreen's first-lesson-by-top-challenge map, verbatim.
-const FIRST_LESSON: Record<string, string> = {
-  tantrums: 'Calm in the Meltdown',
-  listening: 'Getting Heard Without Yelling',
-  screens: 'Screen-Time Without the Fight',
-  sleep: 'Bedtime, Reclaimed',
-  defiance: 'Power Struggles, Defused',
-  anxiety: 'Soothing Big Worries',
-  siblings: 'Sibling Peace',
-  bond: 'Reconnecting With Your Child',
-};
+// What the plan promises must be what the app delivers (review 2026-10-07,
+// B-12). The app's Learn path (mamalearn src/lessons/units.ts LESSON_ORDER)
+// is one fixed sequence of 13 lessons, starting with four "Foundations"
+// lessons, with no week structure. This used to promise "12 lessons,
+// starting with 'Calm in the Meltdown'" (or one of seven other named first
+// lessons, picked by the parent's top challenge), copied from the unshipped
+// variant-B onboarding: no lesson by any of those names exists in the app.
+// Change this with LESSON_ORDER, and with the offer page's "What you get".
+export const APP_LESSON_COUNT = 13;
 
 const AGE_LABEL: Record<string, string> = {
   '0-1': 'under 2',
@@ -109,7 +107,6 @@ export function snapshotRows(answers: Answers): SnapshotRow[] {
   const gs = goals(answers);
   const focusList = cs.slice(0, 2).map((c) => CHALLENGE_SHORT[c] ?? c);
   const goalList = gs.slice(0, 2).map((g) => GOAL_SHORT[g] ?? g);
-  const firstLesson = FIRST_LESSON[cs[0]] ?? 'Your First Win';
 
   return [
     { label: 'Your family', value: familySummary(answers), icon: 'users' },
@@ -125,7 +122,7 @@ export function snapshotRows(answers: Answers): SnapshotRow[] {
     },
     {
       label: 'Your plan',
-      value: `12 lessons, starting with “${firstLesson}”`,
+      value: `${APP_LESSON_COUNT} lessons, starting with the foundations`,
       icon: 'book-open',
       accent: true,
     },

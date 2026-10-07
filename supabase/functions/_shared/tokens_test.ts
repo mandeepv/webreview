@@ -9,12 +9,36 @@ Deno.test('resume token round-trips to its session id', async () => {
   assertEquals(await verifyResumeToken(await resumeToken(SESSION)), SESSION);
 });
 
-Deno.test('resume token for another session or with a tampered signature is rejected', async () => {
-  const [, exp, sig] = (await resumeToken(SESSION)).split('.');
-  assertEquals(await verifyResumeToken(`0b6f5a3e-1d2c-4e5f-8a9b-000000000000.${exp}.${sig}`), null);
-  assertEquals(await verifyResumeToken(`${SESSION}.${exp}.${sig}x`), null);
-  assertEquals(await verifyResumeToken(`${SESSION}.${Number(exp) + 1}.${sig}`), null);
+Deno.test('B-3: a resume token is opaque — the session id is not in it', async () => {
+  const token = await resumeToken(SESSION);
+  assertEquals(token.startsWith('r2.'), true);
+  assertEquals(token.includes(SESSION), false);
+  assertEquals(token.includes(SESSION.replace(/-/g, '')), false);
+  assertEquals(/^r2\.[A-Za-z0-9_-]+$/.test(token), true); // URL-safe as it stands
+  // Two tokens for one session differ (random IV), so a link says nothing about another.
+  assertNotEquals(await resumeToken(SESSION), token);
+});
+
+Deno.test('a tampered, truncated, foreign or old-format resume token is rejected', async () => {
+  const token = await resumeToken(SESSION);
+  const flip = (i: number) => token.slice(0, i) + (token[i] === 'A' ? 'B' : 'A') + token.slice(i + 1);
+  assertEquals(await verifyResumeToken(flip(10)), null); // in the IV
+  assertEquals(await verifyResumeToken(flip(60)), null); // in the ciphertext
+  assertEquals(await verifyResumeToken(flip(token.length - 2)), null); // in the tag
+  assertEquals(await verifyResumeToken(token.slice(0, -4)), null);
+  assertEquals(await verifyResumeToken('r2.'), null);
+  assertEquals(await verifyResumeToken('r2.!!!'), null);
   assertEquals(await verifyResumeToken('garbage'), null);
+  // The old `<sessionId>.<exp>.<sig>` format is no longer accepted.
+  assertEquals(await verifyResumeToken(`${SESSION}.${Math.floor(Date.now() / 1000) + 3600}.c2ln`), null);
+
+  // Sealed under another secret: refused.
+  Deno.env.set('UNSUBSCRIBE_SECRET', 'another-secret');
+  try {
+    assertEquals(await verifyResumeToken(token), null);
+  } finally {
+    Deno.env.set('UNSUBSCRIBE_SECRET', 'test-secret');
+  }
 });
 
 Deno.test('expired resume token is rejected', async () => {

@@ -7,9 +7,10 @@
 //      This cohort is 10–25% of web2app buyers and is pure churn if ignored.
 //   3. cancel retries: revoked rows whose Dodo cancel hasn't succeeded yet
 //      (cancel_pending) — a refunded customer must never be billed again
-//   4. expiry sweep: flip stale rows past period end. 'active' rows past it
-//      are first reconciled against the Dodo API — a late renewal webhook
-//      must not lock out someone who was just billed.
+//   4. expiry sweep: flip stale rows past period end. 'active' and
+//      'past_due' rows past it are first reconciled against the Dodo API —
+//      a late renewal webhook must not lock out someone who was just
+//      billed — and when Dodo can't be asked, nobody is expired that run.
 //
 // Deploy: supabase functions deploy winback-sweep --no-verify-jwt
 // Requires migration 20260930000000_webhook_hardening.sql — apply it first.
@@ -25,7 +26,10 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { alertOwner, escapeHtml, resumeToken, signingConfigured, timingSafeEqual, unsubscribeParts } from '../_shared/email.ts';
-import { cancelDodoSubscription, fetchDodoSubscription } from '../_shared/dodo.ts';
+import { accountPredatesSession } from '../_shared/accounts.ts';
+import { hasAccess } from '../_shared/entitlement.ts';
+import { cancelDodoSubscription, lookupDodoSubscription } from '../_shared/dodo.ts';
+import { isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -37,6 +41,8 @@ const HOUR = 3600 * 1000;
 const DAY = 24 * HOUR;
 /** Keep in sync with the 'active' grace in expire_stale_entitlements(). */
 const ACTIVE_EXPIRY_GRACE_MS = 5 * DAY;
+/** Overdue rows one run asks Dodo about (5 at a time, 15 s timeout each). */
+const RECONCILE_LIMIT = 200;
 
 /** The whole function. index.ts serves it; the integration tests call it directly. */
 export async function handler(req: Request): Promise<Response> {
@@ -46,7 +52,7 @@ export async function handler(req: Request): Promise<Response> {
     return new Response('forbidden', { status: 403 });
   }
 
-  const results = { abandoned: 0, unactivated: 0, cancelRetried: 0, reconciled: 0, expired: 0, retentionCleared: 0, retentionDeleted: 0 };
+  const results = { abandoned: 0, unactivated: 0, cancelRetried: 0, reconciled: 0, expired: 0, expiryPaused: false, retentionCleared: 0, retentionDeleted: 0 };
 
   // ── 1. Abandoned after email capture (marketing) ──────────────────────────
   const mailingAddress = Deno.env.get('MAILING_ADDRESS');
@@ -79,9 +85,11 @@ export async function handler(req: Request): Promise<Response> {
   const userIds = [...new Set((abandoned ?? []).map((r) => r.user_id as string))];
   const [optedOut, paying, stageByUser] = await Promise.all([
     userSet('email_opt_outs', userIds),
-    // Anyone with an entitlement row has bought (possibly on another funnel
-    // session, or with the webhook still landing) — never "still thinking".
-    userSet('entitlements', userIds),
+    // Anyone who has bought (possibly on another funnel session, or with
+    // the webhook still landing) is never "still thinking". A row whose
+    // first payment failed (subscription.failed → expired, never activated)
+    // is not a purchase: that lead still gets the ladder (review P3).
+    buyers(userIds),
     highestStageByUser(userIds),
   ]);
 
@@ -101,7 +109,7 @@ export async function handler(req: Request): Promise<Response> {
     const { data: userData } = await admin.auth.admin.getUserById(row.user_id);
     const user = userData?.user;
     if (!user?.email) continue;
-    if (new Date(user.created_at).getTime() < new Date(row.created_at).getTime() - 10 * 60 * 1000) {
+    if (accountPredatesSession(user.created_at, row.created_at)) {
       // The account predates this funnel session: an existing app user, or
       // someone typing another person's address. Not a lead we created.
       await admin.from('funnel_sessions').update({ winback_stage: 2 }).eq('id', row.id);
@@ -194,7 +202,7 @@ export async function handler(req: Request): Promise<Response> {
   // ── 3. Retry pending cancels (refunded / disputed customers) ──────────────
   const { data: pendingCancels } = await admin
     .from('entitlements')
-    .select('user_id, dodo_subscription_id')
+    .select('user_id, dodo_subscription_id, updated_at')
     .eq('source', 'dodo')
     .eq('cancel_pending', true)
     .not('dodo_subscription_id', 'is', null)
@@ -209,37 +217,82 @@ export async function handler(req: Request): Promise<Response> {
         .eq('user_id', row.user_id)
         .eq('source', 'dodo');
       results.cancelRetried++;
+    } else if (
+      // Still failing two days after the revocation (updated_at is when it
+      // was revoked): remind the owner once a day instead of retrying
+      // silently forever (review P3) — the next renewal would bill someone
+      // who was refunded.
+      Date.now() - new Date(row.updated_at).getTime() > 2 * DAY &&
+      !(await isRateLimited(admin, [{ key: `sweep:cancel:${row.dodo_subscription_id}`, windowSeconds: 86_400, max: 1 }]))
+    ) {
+      await alertOwner(
+        'Cancel still failing — cancel this subscription by hand',
+        `Dodo subscription ${row.dodo_subscription_id} (user ${row.user_id}) was refunded or disputed ` +
+          `on ${row.updated_at}, and cancelling it has failed every hour since. Cancel it in the Dodo ` +
+          `dashboard before its next renewal. (Repeats daily while it stays pending.)`
+      );
     }
   }
 
   // ── 4. Expiry sweep ────────────────────────────────────────────────────────
-  // Before expire_stale_entitlements() flips 'active' rows, ask Dodo. If the
-  // subscription is still active with a future billing date, a renewal
-  // webhook went missing: heal the row instead of locking out a payer (P1-8).
+  // Before expire_stale_entitlements() flips rows, ask Dodo about every one
+  // that is still paying in our books: 'active' past its 5-day grace and
+  // 'past_due' past its 1-day grace. If Dodo says the subscription is active
+  // with a future billing date, a renewal webhook went missing: heal the row
+  // instead of locking out a payer (P1-8). 'past_due' too (MP-3): a card
+  // retry that succeeded is a payer whose `renewed` may be the lost webhook.
+  //
+  // An answer we can't trust (Dodo down, a timeout) is NOT "not active"
+  // (MP-3): then the expiry is skipped this run — everyone keeps access an
+  // hour longer — and the next run asks again. So is a backlog bigger than
+  // one run can check, rather than expiring the rest unchecked.
+  const pastDueCutoff = new Date(Date.now() - DAY).toISOString();
+  const activeCutoff = new Date(Date.now() - ACTIVE_EXPIRY_GRACE_MS).toISOString();
   const { data: overdue } = await admin
     .from('entitlements')
-    .select('user_id, dodo_subscription_id, current_period_end')
+    .select('user_id, status, dodo_subscription_id, current_period_end')
     .eq('source', 'dodo')
-    .eq('status', 'active')
-    .lt('current_period_end', new Date(Date.now() - ACTIVE_EXPIRY_GRACE_MS).toISOString())
     .not('dodo_subscription_id', 'is', null)
-    .limit(50);
+    .or(`and(status.eq.active,current_period_end.lt."${activeCutoff}"),and(status.eq.past_due,current_period_end.lt."${pastDueCutoff}")`)
+    .order('current_period_end', { ascending: true })
+    .limit(RECONCILE_LIMIT + 1);
+  const toCheck = (overdue ?? []).slice(0, RECONCILE_LIMIT);
+  const backlog = (overdue ?? []).length > RECONCILE_LIMIT;
 
   const healed: string[] = [];
-  for (const row of overdue ?? []) {
-    const sub = await fetchDodoSubscription(row.dodo_subscription_id);
+  const unknown: string[] = [];
+  await forEachLimit(toCheck, 5, async (row) => {
+    const answer = await lookupDodoSubscription(row.dodo_subscription_id);
+    if (answer.kind === 'unknown') {
+      unknown.push(row.dodo_subscription_id);
+      return;
+    }
+    const sub = answer.kind === 'found' ? answer.subscription : null;
     if (sub?.status === 'active' && sub.next_billing_date && new Date(sub.next_billing_date) > new Date()) {
       await admin
         .from('entitlements')
-        .update({ current_period_end: sub.next_billing_date, updated_at: new Date().toISOString() })
+        .update({ status: 'active', current_period_end: sub.next_billing_date, updated_at: new Date().toISOString() })
         .eq('user_id', row.user_id)
-        .eq('source', 'dodo');
+        .eq('source', 'dodo')
+        .eq('dodo_subscription_id', row.dodo_subscription_id);
       healed.push(row.dodo_subscription_id);
     }
-  }
+  });
   results.reconciled = healed.length;
 
-  const { data: expiredCount } = await admin.rpc('expire_stale_entitlements');
+  const expiryPaused = unknown.length > 0 || backlog;
+  const { data: expiredCount } = expiryPaused ? { data: 0 } : await admin.rpc('expire_stale_entitlements');
+  if (expiryPaused && !(await isRateLimited(admin, [{ key: 'sweep:expiry-paused', windowSeconds: 6 * 3600, max: 1 }]))) {
+    await alertOwner(
+      'Expiry paused — Dodo could not confirm overdue subscriptions',
+      `${unknown.length} overdue subscription(s) got no usable answer from Dodo` +
+        `${unknown.length ? ` (${unknown.slice(0, 20).join(', ')}${unknown.length > 20 ? ', …' : ''})` : ''}` +
+        `${backlog ? `, and more than ${RECONCILE_LIMIT} rows are overdue at once` : ''}. Nobody was expired ` +
+        `this run, so no payer is locked out while Dodo can't be asked; each hourly run tries again. ` +
+        `If this lasts, check status.dodopayments.com and the Dodo API key. (Repeats at most every 6 hours.)`
+    );
+  }
+  results.expiryPaused = expiryPaused;
 
   // ── 5. Data retention (P3-18; stated in the privacy policy) ───────────────
   // IP, user agent and Meta cookie ids are only needed to match a purchase to
@@ -266,22 +319,60 @@ export async function handler(req: Request): Promise<Response> {
     .from('rate_limit_hits')
     .delete()
     .lt('window_start', new Date(Date.now() - DAY).toISOString());
+  // Handoff keys past their 7 days (used or not) can never sign anyone in;
+  // a day's margin keeps them around for a support question (review P3).
+  await admin.from('handoff_keys').delete().lt('expires_at', new Date(Date.now() - DAY).toISOString());
+  // Webhook ids only need to outlive Dodo's retries (about 3 days).
+  await admin
+    .from('webhook_events')
+    .delete()
+    .eq('status', 'done')
+    .lt('received_at', new Date(Date.now() - 30 * DAY).toISOString());
   results.expired = (expiredCount as number) ?? 0;
 
-  const expiredActive = (overdue ?? []).length - healed.length;
-  if (healed.length > 0 || expiredActive > 0) {
+  // Only 'active' rows: an active row Dodo no longer confirms means renewal
+  // webhooks went missing. A past_due row that lapses is ordinary churn.
+  const expiredUnconfirmed = expiryPaused
+    ? 0
+    : toCheck.filter((r) => r.status === 'active' && !healed.includes(r.dodo_subscription_id)).length;
+  if (healed.length > 0 || expiredUnconfirmed > 0) {
     await alertOwner(
       'Expiry sweep found overdue active subscriptions',
-      `${healed.length} active row(s) were past their period end but Dodo says they're still active — ` +
+      `${healed.length} overdue row(s) were past their period end but Dodo says they're still active — ` +
         `renewal webhooks are probably failing (check Dodo → Webhooks → Message attempts). Healed: ` +
-        `${healed.join(', ') || 'none'}.\n${expiredActive} active row(s) were expired because Dodo did not ` +
-        `confirm them (or couldn't be reached).`
+        `${healed.join(', ') || 'none'}.\n${expiredUnconfirmed} active row(s) were expired because Dodo ` +
+        `says they are no longer active.`
     );
   }
 
   return new Response(JSON.stringify(results), {
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+/** Runs `fn` over `items`, at most `limit` at a time. */
+async function forEachLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/**
+ * The subset of userIds who have bought: an entitlement that was ever
+ * activated, or one that still grants access. Not a row whose first payment
+ * failed.
+ */
+async function buyers(userIds: string[]): Promise<Set<string>> {
+  if (userIds.length === 0) return new Set();
+  const { data } = await admin
+    .from('entitlements')
+    .select('user_id, status, current_period_end, activated_subscription_id')
+    .in('user_id', userIds);
+  return new Set(
+    (data ?? []).filter((r) => r.activated_subscription_id || hasAccess(r, new Date())).map((r) => r.user_id as string)
+  );
 }
 
 /** The subset of userIds that have a row in `table`. */

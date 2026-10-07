@@ -20,6 +20,7 @@ const NOINDEX = [
   '/welcome',
   '/waitlist',
   '/unsubscribe',
+  '/u',
   '/manage',
   '/r/:path*',
   '/api/:path*',
@@ -29,10 +30,14 @@ const NOINDEX = [
 const CSP = [
   "default-src 'self'",
   // 'unsafe-inline': the Meta pixel snippet and Next's inline bootstrap.
-  "script-src 'self' 'unsafe-inline' https://connect.facebook.net https://*.posthog.com",
+  // *.dodopayments.com: the checkout SDK injects its wallet script (Apple
+  // Pay, from sdk-v2.hs.dodopayments.com) into THIS page, not its iframe —
+  // without it every checkout logs a violation, and enforcing the policy
+  // would break Apple Pay (review 2026-10-07, FE-6).
+  "script-src 'self' 'unsafe-inline' https://connect.facebook.net https://*.posthog.com https://*.dodopayments.com",
   "connect-src 'self' https://*.posthog.com https://www.facebook.com https://connect.facebook.net https://*.dodopayments.com",
   'frame-src https://*.dodopayments.com https://www.facebook.com',
-  "img-src 'self' data: blob: https://www.facebook.com https://*.posthog.com",
+  "img-src 'self' data: blob: https://www.facebook.com https://*.posthog.com https://*.dodopayments.com",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
   "base-uri 'self'",

@@ -75,16 +75,29 @@ export type DodoSubscription = {
   next_billing_date?: string;
 };
 
-/** GET /subscriptions/{id}. Returns null on any failure — callers treat that as "unknown". */
-export async function fetchDodoSubscription(subscriptionId: string): Promise<DodoSubscription | null> {
+export type DodoLookup =
+  | { kind: 'found'; subscription: DodoSubscription }
+  /** Dodo answered that it has no such subscription (404). */
+  | { kind: 'gone' }
+  /** No answer we can trust: 5xx, another 4xx, a timeout, a dropped connection. */
+  | { kind: 'unknown' };
+
+/**
+ * GET /subscriptions/{id}. Never throws. Callers must keep 'unknown' apart
+ * from "not active": the expiry sweep used to read every failure as "not
+ * active" and expire paying customers during a Dodo outage (review
+ * 2026-10-07, MP-3).
+ */
+export async function lookupDodoSubscription(subscriptionId: string): Promise<DodoLookup> {
   try {
     const res = await fetch(`${DODO_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       headers: authHeaders(),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) return null;
-    return (await res.json()) as DodoSubscription;
+    if (res.status === 404) return { kind: 'gone' };
+    if (!res.ok) return { kind: 'unknown' };
+    return { kind: 'found', subscription: (await res.json()) as DodoSubscription };
   } catch {
-    return null;
+    return { kind: 'unknown' };
   }
 }

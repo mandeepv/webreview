@@ -85,7 +85,7 @@ itest('S2: a lead gets "plan ready" at 1 hour and "still thinking" at 24 hours �
   assertEquals(await stage(sessionId), 1);
 
   // CAN-SPAM: unsubscribe link, postal address, one-click headers.
-  assertStringIncludes(first.html ?? '', `${TEST.siteUrl}/unsubscribe?u=${user.id}`);
+  assertStringIncludes(first.html ?? '', `${TEST.siteUrl}/u?u=${user.id}`);
   assertStringIncludes(first.html ?? '', 'PO Box 1');
   const sent = fake.to(HOSTS.resend).find((c) => (c.body as { to: string[] }).to.includes(user.email))!;
   assertEquals((sent.body as { headers: Record<string, string> }).headers['List-Unsubscribe-Post'], 'List-Unsubscribe=One-Click');
@@ -201,6 +201,19 @@ itest('S6: pending cancels are retried — cleared when Dodo confirms, kept when
   assertEquals(fake.alerts().filter((a) => a.subject.includes('Cancel this subscription')).length, 0, 'no hourly re-alert');
 });
 
+itest('S6b: a cancel still failing two days after the refund is handed to the owner once a day (P3)', async () => {
+  fake.install();
+  const stuck = await payer(10 * HOUR);
+  await putEntitlement({ user_id: stuck.user.id, status: 'revoked', dodo_subscription_id: stuck.sub, cancel_pending: true, updated_at: isoIn(-days(3)) });
+  await db().from('rate_limit_hits').delete().eq('key', `sweep:cancel:${stuck.sub}`);
+  fake.on('PATCH', HOSTS.dodo, new RegExp(`^/subscriptions/${stuck.sub}$`), () => json({ message: 'down' }, 503));
+
+  await sweep();
+  await sweep();
+  const alerts = fake.alerts().filter((a) => a.subject.includes('Cancel still failing') && (a.text ?? '').includes(stuck.sub));
+  assertEquals(alerts.length, 1);
+});
+
 itest('S7: an active row past its grace is healed if Dodo says it renewed, and expired if not (P1-8)', async () => {
   fake.install();
   const renewed = await payer(400 * 24 * HOUR);
@@ -222,6 +235,63 @@ itest('S7: an active row past its grace is healed if Dodo says it renewed, and e
   assertEquals(new Date(healed!.current_period_end!).getTime(), new Date(nextBilling).getTime());
   assertEquals((await entitlement(lapsed.user.id))?.status, 'expired');
   assert(fake.alerts().some((a) => a.subject.includes('overdue active subscriptions')));
+});
+
+itest('S7b: when Dodo cannot be reached, nobody is expired that run, the owner is told, and the next run catches up (MP-3)', async () => {
+  fake.install();
+  await db().from('rate_limit_hits').delete().like('key', 'sweep:expiry-paused%'); // the alert's 6-hour latch
+  const payerDuringOutage = await payer(400 * 24 * HOUR);
+  const lapsedCancelled = await payer(400 * 24 * HOUR);
+  await putEntitlement({ user_id: payerDuringOutage.user.id, status: 'active', dodo_subscription_id: payerDuringOutage.sub, current_period_end: isoIn(-days(6)) });
+  await putEntitlement({ user_id: lapsedCancelled.user.id, status: 'cancelled', dodo_subscription_id: lapsedCancelled.sub, current_period_end: isoIn(-days(2)) });
+  fake.on('GET', HOSTS.dodo, new RegExp(`^/subscriptions/${payerDuringOutage.sub}$`), () => json({ message: 'upstream' }, 503));
+
+  const run = JSON.parse((await sweep()).text);
+  assertEquals(run.expiryPaused, true);
+  assertEquals((await entitlement(payerDuringOutage.user.id))?.status, 'active', 'a payer was expired because Dodo was down');
+  assertEquals((await entitlement(lapsedCancelled.user.id))?.status, 'cancelled'); // waits an hour too
+  assert(fake.alerts().some((a) => a.subject.includes('Expiry paused')));
+
+  // Dodo answers again: it really has lapsed.
+  fake.on('GET', HOSTS.dodo, new RegExp(`^/subscriptions/${payerDuringOutage.sub}$`), () =>
+    json({ subscription_id: payerDuringOutage.sub, status: 'cancelled', next_billing_date: isoIn(-days(6)) })
+  );
+  assertEquals(JSON.parse((await sweep()).text).expiryPaused, false);
+  assertEquals((await entitlement(payerDuringOutage.user.id))?.status, 'expired');
+  assertEquals((await entitlement(lapsedCancelled.user.id))?.status, 'expired');
+});
+
+itest('S7c: a past_due row whose card retry went through is healed to active, not expired (MP-3)', async () => {
+  fake.install();
+  const p = await payer(400 * 24 * HOUR);
+  await putEntitlement({ user_id: p.user.id, status: 'past_due', dodo_subscription_id: p.sub, current_period_end: isoIn(-days(2)) });
+  const nextBilling = isoIn(days(28));
+  fake.on('GET', HOSTS.dodo, new RegExp(`^/subscriptions/${p.sub}$`), () =>
+    json({ subscription_id: p.sub, status: 'active', next_billing_date: nextBilling })
+  );
+  await sweep();
+  const row = await entitlement(p.user.id);
+  assertEquals(row?.status, 'active');
+  assertEquals(new Date(row!.current_period_end!).getTime(), new Date(nextBilling).getTime());
+});
+
+itest('S7d: more than 50 overdue rows are all reconciled in one run (MP-3)', async () => {
+  fake.install();
+  const payers = [];
+  for (let i = 0; i < 60; i++) {
+    const p = await payer(400 * 24 * HOUR);
+    await putEntitlement({ user_id: p.user.id, status: 'active', dodo_subscription_id: p.sub, current_period_end: isoIn(-days(6)) });
+    payers.push(p);
+  }
+  const renewed = new Set(payers.map((p) => p.sub));
+  fake.on('GET', HOSTS.dodo, /^\/subscriptions\/[^/]+$/, (c) => {
+    const sub = c.url.pathname.split('/').at(-1)!;
+    return renewed.has(sub)
+      ? json({ subscription_id: sub, status: 'active', next_billing_date: isoIn(days(25)) })
+      : json({ message: 'not found' }, 404);
+  });
+  await sweep();
+  for (const p of payers) assertEquals((await entitlement(p.user.id))?.status, 'active', p.sub);
 });
 
 itest('S9: a backlog of more than 50 leads drains oldest first over successive runs — nobody is starved', async () => {
@@ -282,4 +352,40 @@ itest('S12: retention — ad-matching data cleared after 30 days, unlinked sessi
   assertEquals(recentRow.capi, capi);
   assertEquals((await rows([orphanOld])).length, 0);
   assertEquals((await rows([orphanRecent])).length, 1);
+});
+
+itest('S13: a lead whose first payment failed still gets the win-back ladder; a buyer does not (P3)', async () => {
+  fake.install();
+  const failed = await lead(2 * HOUR);
+  await putEntitlement({ user_id: failed.user.id, status: 'expired', dodo_subscription_id: newId('sub'), current_period_end: isoIn(-HOUR) });
+  const bought = await lead(2 * HOUR);
+  const sub = newId('sub');
+  await putEntitlement({ user_id: bought.user.id, status: 'expired', dodo_subscription_id: sub, activated_subscription_id: sub, current_period_end: isoIn(-HOUR) });
+
+  await sweep();
+  assertEquals(emailsTo(failed.user.email).length, 1);
+  assertEquals(emailsTo(bought.user.email).length, 0);
+});
+
+itest('S14: handoff keys past their lifetime and old webhook ids are deleted (P3)', async () => {
+  fake.install();
+  const user = await createUser();
+  const hex = () => [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const [stale, live] = [hex(), hex()];
+  await db().from('handoff_keys').insert([
+    { key_hash: stale, user_id: user.id, source: 'email', created_at: isoIn(-days(9)), expires_at: isoIn(-days(2)) },
+    { key_hash: live, user_id: user.id, source: 'email' },
+  ]);
+  const oldId = `msg_${crypto.randomUUID()}`;
+  const newIdMsg = `msg_${crypto.randomUUID()}`;
+  await db().from('webhook_events').insert([
+    { id: oldId, event_type: 'subscription.active', status: 'done', received_at: isoIn(-days(31)) },
+    { id: newIdMsg, event_type: 'subscription.active', status: 'done', received_at: isoIn(-days(2)) },
+  ]);
+
+  await sweep();
+  const { data: keys } = await db().from('handoff_keys').select('key_hash').eq('user_id', user.id);
+  assertEquals((keys ?? []).map((k) => k.key_hash), [live]);
+  const { data: events } = await db().from('webhook_events').select('id').in('id', [oldId, newIdMsg]);
+  assertEquals((events ?? []).map((e) => e.id), [newIdMsg]);
 });

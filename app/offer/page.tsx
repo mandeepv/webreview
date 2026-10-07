@@ -10,8 +10,8 @@ import {
   Shell,
 } from '@/components/ui';
 import { config, perDayAnnual, perDayMonthly } from '@/lib/config';
-import { offerEcho } from '@/lib/quiz/scoring';
-import { getSession, readMetaCookies, save } from '@/lib/session';
+import { APP_LESSON_COUNT, offerEcho } from '@/lib/quiz/scoring';
+import { getSession, readMetaCookies, resetSession, save } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { closeOverlayCheckout, openOverlayCheckout, preloadCheckout } from '@/lib/checkout';
 import { pixel } from '@/lib/meta';
@@ -116,15 +116,24 @@ export default function OfferPage() {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [echo, setEcho] = useState<{ goal: string; focus: string; age: string } | null>(null);
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
+  const [noSession, setNoSession] = useState(false);
 
   useEffect(() => {
     const s = getSession();
-    // No quiz session → cold direct hit; the offer means nothing without the
-    // plan story. Send them to the start.
+    // No quiz session in this browser. Usually NOT a cold hit: Instagram's
+    // own "Open in browser" opens this URL in Safari, whose storage is empty
+    // — the plan is still in the in-app browser. Bouncing to /start made
+    // them redo the quiz (review 2026-10-07, FE-7); say where the plan is.
     if (!s.emailCaptured) {
-      router.replace('/start');
+      setNoSession(true);
+      track('web_funnel_offer_no_session');
       return;
     }
+    // Whose plan this is (IN-6). A shared /r/ link can hand this browser
+    // someone else's session, and paying here would put the purchase on
+    // THEIR account; the email makes that visible before anyone pays.
+    setAccountEmail(s.email);
     const n = s.answers['name'];
     setName(typeof n === 'string' && n.trim() ? n.trim() : null);
     setEcho(offerEcho(s.answers));
@@ -143,7 +152,6 @@ export default function OfferPage() {
     };
     window.addEventListener('pageshow', onPageShow);
     return () => window.removeEventListener('pageshow', onPageShow);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const checkout = async () => {
@@ -224,6 +232,37 @@ export default function OfferPage() {
     }
   };
 
+  const notMe = () => {
+    resetSession();
+    router.replace('/start');
+  };
+
+  if (noSession) {
+    return (
+      <Shell>
+        <div className="flex flex-1 flex-col justify-center py-10">
+          <Eyebrow>Kinderwell</Eyebrow>
+          <div className="mt-4">
+            <RichHeadline className="font-serif text-[30px] leading-[1.18] text-ink">
+              {'Your plan is saved, *just not in this browser*.'}
+            </RichHeadline>
+          </div>
+          <p className="mt-4 text-[16px] leading-[1.6] text-ink/70">
+            Opened this from Instagram or Facebook? Your plan is still in that app. Go back to it and
+            tap <strong>Prefer Apple Pay? Copy a link for Safari</strong>, then paste the link here.
+          </p>
+          <p className="mt-3 text-[16px] leading-[1.6] text-ink/70">
+            Or start again here. It takes about two minutes.
+          </p>
+          <div className="mt-8">
+            <PrimaryButton href="/start">Start again</PrimaryButton>
+          </div>
+        </div>
+        <LegalFooter />
+      </Shell>
+    );
+  }
+
   return (
     <Shell>
       <div className="flex-1 py-8">
@@ -254,8 +293,9 @@ export default function OfferPage() {
             </div>
             <div className="flex items-center text-ink/40">→</div>
             <div className="flex-1 rounded-card bg-forest p-4">
+              {/* Not "Week 10": the app's path has no weeks (B-12). */}
               <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-mint">
-                Week 10
+                Where you’re headed
               </p>
               <p className="mt-1.5 font-serif text-[16px] capitalize leading-snug text-cream">
                 {echo.goal}
@@ -286,6 +326,14 @@ export default function OfferPage() {
         {error ? <p className="mt-3 text-[14px] text-clay-deep">{error}</p> : null}
 
         <div className="mt-6">
+          {accountEmail ? (
+            <p className="mb-3 text-center text-[13px] text-ink/55">
+              For <span className="ph-no-capture font-medium text-ink/75">{accountEmail}</span> ·{' '}
+              <button onClick={notMe} className="underline underline-offset-2 hover:text-ink/75">
+                Not you?
+              </button>
+            </p>
+          ) : null}
           <PrimaryButton onClick={checkout} disabled={busy}>
             {busy ? 'Opening secure checkout…' : 'Get my plan'}
           </PrimaryButton>
@@ -330,8 +378,8 @@ export default function OfferPage() {
         <div className="mt-9">
           <p className="font-serif text-[22px] text-ink">What you get</p>
           <ul className="mt-4 space-y-3 text-[16px] text-ink/75">
-            <li className="flex gap-3"><span className="text-forest">✓</span> Your personalized 10-week path</li>
-            <li className="flex gap-3"><span className="text-forest">✓</span> Every Kinderwell lesson — sequenced, not a tip feed</li>
+            {/* Matches the app's Learn path (lib/quiz/scoring.ts APP_LESSON_COUNT). */}
+            <li className="flex gap-3"><span className="text-forest">✓</span> All {APP_LESSON_COUNT} Kinderwell lessons — sequenced, not a tip feed</li>
             <li className="flex gap-3"><span className="text-forest">✓</span> 5–10 minute lessons built for tired evenings</li>
             <li className="flex gap-3"><span className="text-forest">✓</span> The words to say in the moments that keep going wrong</li>
           </ul>

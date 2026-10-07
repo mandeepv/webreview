@@ -12,9 +12,9 @@
 // Option VALUES mirror variantBContent.ts keys exactly, so web + app
 // segmentation line up when analyzed together.
 //
-// ⚠︎ STATS: the Mirror beat's "83% of parents" is variant B's
-// placeholder-but-hard-hitting number, kept at the owner's decision — it MUST
-// be confirmed defensible before ads run (MANUAL_STEPS.md §8).
+// STATS: the Mirror beat's "83% of parents" and the "two weeks" claim are
+// confirmed real by the owner (2026-10-07); the evidence is kept off-repo.
+// A new stat needs the same before it ships (Meta ad review, the FTC).
 //
 // Visual system: the cream/forest onboarding design system from the app's
 // design/onboarding-lesson-revamp branch (OnboardingColors et al. in
@@ -66,7 +66,7 @@ export const QUIZ_STEPS: QuizStepDef[] = [
     body: [
       'No right answers, no judgment. The more real you are, the sharper your plan gets, built for ',
       { text: 'your child', hl: true },
-      ', not the average one.\n\nEverything you share stays on your side. It just shapes your plan.',
+      ', not the average one.\n\nWhat you share stays private. It just shapes your plan.',
     ],
     cta: 'Continue',
   },

@@ -35,7 +35,7 @@ npm run dev                  # http://localhost:3000
 | Command | What | Needs |
 |---|---|---|
 | `npm test` | Vitest (site: proxy, API routes, resume links, quiz data, plan copy, /offer) + Deno unit tests (state machine, signatures, tokens) | nothing |
-| `npm run test:e2e` | Playwright on a production build, iPhone WebKit: HTTP checks, the funnel, the purchase page | `npm run build`, `npx playwright install webkit` once |
+| `npm run test:e2e` | Playwright on a production build, iPhone WebKit: HTTP checks, the funnel, the purchase page, and that no quiz answer, name or email reaches PostHog or the Meta pixel | `npm run build` with the CI e2e env (incl. a placeholder `NEXT_PUBLIC_POSTHOG_KEY`, or B1 fails on purpose), `npx playwright install webkit` once |
 | `npm run test:db` | pgTAP: RLS on every table, function grants, cascades, expiry grace, rate limits | local Supabase (`supabase start`, Docker) |
 | `npm run test:integration` | Every edge function end to end against a real database, Dodo/Resend/Meta/PostHog faked and recorded | local Supabase, plus `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` from `supabase status -o env` |
 
@@ -51,8 +51,18 @@ Supabase and replaces every secret with a fake). Dodo payloads:
 `supabase/functions/_fixtures/dodo/` — **built from Dodo's schema, not yet
 captured; see its README to swap in real ones.**
 
-**Deploy edge functions with `scripts/deploy-functions.sh`**, which refuses
-uncommitted code, an unpushed commit, or a commit whose CI isn't fully green.
+**Deploy edge functions with `scripts/deploy-functions.sh <name> […]`**, which
+refuses uncommitted code, an unpushed commit, a commit whose CI isn't fully
+green, or a project it can't identify (it reads
+`supabase/.temp/linked-project.json`). Name every function: there is no
+"all" default, and `mint-handoff` (whose deploy turns the sign-in links on)
+asks for a second confirmation. Every successful deploy is appended to
+`DEPLOY_LOG.md`; commit it afterwards.
+
+The web access rule (`hasAccess`) has two more copies in the app repo; all
+three run over `supabase/functions/_shared/access_rule_cases.json`, which
+must stay byte-identical with the app's copy (its
+`scripts/check-migration-parity.sh` checks).
 
 ## Map
 
@@ -64,13 +74,13 @@ uncommitted code, an unpushed commit, or a commit whose CI isn't fully green.
 | `app/k/[key]` + `app/.well-known/apple-app-site-association` | SPEC-21 sign-in links on `open.kinderwell.app`: the page a link opens without the app (no analytics, by design), and Apple's file that lets the app claim `/k/*`. Browser side: `lib/handoff.ts` |
 | `app/waitlist` | Soft exit for Android / out-of-range ages |
 | `app/api/*` | Thin proxies to edge functions (attach IP/UA for Meta CAPI) |
-| `lib/session.ts` | localStorage session + first-touch attribution |
+| `lib/session.ts` | localStorage session + attribution (the latest tagged ad click; an `?a=`-only visit changes only the variant) |
 | `lib/analytics.ts` / `lib/meta.ts` | Typed PostHog registry / Meta Pixel wrapper |
 | `supabase/functions/` | capture-email, create-checkout, dodo-webhook (single writer of entitlements), winback-sweep, resume, unsubscribe, mint-handoff (the welcome page's one-time app sign-in link, SPEC-21). Each `index.ts` only serves its `handler.ts`, which the integration tests call directly |
 | `supabase/functions/_integration/`, `_testing/`, `_fixtures/` | Integration tests, their harness, Dodo payload fixtures (never deployed: `_` folders aren't functions) |
 | `supabase/tests/database/` | pgTAP database tests |
 | `e2e/` | Playwright browser tests |
-| `app/legal/*` | Privacy / terms / refunds — TEMPLATES, fill brackets before launch |
+| `app/legal/*` | Privacy / terms / refunds — live text (updated 2026-10-07); keep it true to what the code collects and in step with the app's `legal/` docs |
 
 ## House rules inherited from the app repo (`~/mamalearn/docs/INVARIANTS.md`)
 
@@ -82,4 +92,10 @@ uncommitted code, an unpushed commit, or a commit whose CI isn't fully green.
 - A handoff key (SPEC-21) is a login credential: stored only as its sha256,
   never logged, never in an analytics event, and never in the URL of a page
   that loads analytics (the link page is a bare route handler for that
-  reason). App INVARIANTS #29.
+  reason). App INVARIANTS #29. The welcome page gets one only with the nonce
+  of the browser that created the checkout that was PAID, and never for a
+  purchase on an account older than its funnel session
+  (`_shared/accounts.ts`; review 2026-10-07, B-1/B-3).
+- The funnel session id is not a secret: nothing may be decided on it alone.
+  Resume links are opaque, resume's mint needs the email too, and a session
+  that belongs to one account is never moved to another.

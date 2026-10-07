@@ -4,15 +4,21 @@
 // app already signed in.
 //
 // What proves the caller is the buyer's browser: the funnel sessionId AND a
-// browser-only nonce whose sha256 create-checkout stored. The sessionId alone
-// is not enough: processors see it (Dodo's checkout metadata, the resume
-// links in win-back emails). It no longer reaches Meta: the Lead event id is
-// a hash of it (_shared/meta.ts leadEventId). The nonce never leaves the
-// browser except to our own functions.
+// browser-only nonce whose sha256 rode in the PAID checkout's Dodo metadata
+// (create-checkout puts it there; dodo-webhook copies it onto the session at
+// first activation). The sessionId alone is not enough: Dodo's checkout
+// metadata carries it. It no longer reaches Meta (the Lead event id is a
+// hash of it, _shared/meta.ts leadEventId) or email links (resume tokens are
+// opaque). The nonce never leaves the browser except to our own functions,
+// and binding it to the paid checkout means a caller who learns the session
+// id cannot swap in a nonce of their own (review 2026-10-07, B-3).
 //
 // A key is issued only when the nonce matches, the purchase landed less than
 // 24 h ago (funnel_sessions.purchased_at, written by dodo-webhook at first
-// activation) and the web entitlement is active. At most 5 per session a day.
+// activation), the account is the one the funnel created for this session
+// (not an existing account someone typed the address of — B-1,
+// _shared/accounts.ts) and the web entitlement is active. At most 5 per
+// session a day.
 //
 // Answers (the page retries only not_ready and 5xx):
 //   200 { link } · 400 bad_request · 403 not_entitled · 404 not_found ·
@@ -26,7 +32,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { isFromProxy } from '../_shared/email.ts';
 import { decideMint, KEY_RE, mintHandoffKey, sha256Hex } from '../_shared/handoff.ts';
-import { isRateLimited } from '../_shared/ratelimit.ts';
+import { ipBucket, isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -57,7 +63,7 @@ export async function handler(req: Request): Promise<Response> {
   // minute), so these are loose; the mint cap below is the real limit.
   if (
     await isRateLimited(admin, [
-      { key: `mh:ip:${body.client_ip ?? ''}`, windowSeconds: 600, max: 60 },
+      { key: `mh:ip:${ipBucket(body.client_ip)}`, windowSeconds: 600, max: 60 },
       { key: `mh:session:${sessionId}`, windowSeconds: 600, max: 30 },
     ])
   ) {
@@ -66,7 +72,7 @@ export async function handler(req: Request): Promise<Response> {
 
   const { data: session, error: sessionError } = await admin
     .from('funnel_sessions')
-    .select('user_id, handoff_nonce_hash, purchased_at')
+    .select('user_id, handoff_nonce_hash, purchased_at, created_at')
     .eq('id', sessionId)
     .maybeSingle();
   if (sessionError) {
@@ -74,23 +80,34 @@ export async function handler(req: Request): Promise<Response> {
     return json({ error: 'error' }, 500);
   }
 
-  // A failed read is an error, never "not entitled" and never "entitled".
+  // Only once the purchase has landed (polling before it stays cheap). A
+  // failed read is an error, never "not entitled" and never "entitled".
   let entitlement = null;
+  let accountCreatedAt: string | null = null;
   if (session?.user_id && session.purchased_at) {
-    const { data, error } = await admin
-      .from('entitlements')
-      .select('status, current_period_end')
-      .eq('user_id', session.user_id)
-      .eq('source', 'dodo')
-      .maybeSingle();
-    if (error) {
-      console.error('mint-handoff entitlement read failed', error.message);
+    const [{ data, error }, { data: userData, error: userError }] = await Promise.all([
+      admin
+        .from('entitlements')
+        .select('status, current_period_end')
+        .eq('user_id', session.user_id)
+        .eq('source', 'dodo')
+        .maybeSingle(),
+      admin.auth.admin.getUserById(session.user_id),
+    ]);
+    if (error || userError) {
+      console.error('mint-handoff entitlement/account read failed', (error ?? userError)!.message);
       return json({ error: 'error' }, 500);
     }
     entitlement = data;
+    accountCreatedAt = userData?.user?.created_at ?? null;
   }
 
-  const decision = decideMint(session, await sha256Hex(nonce), entitlement, new Date());
+  const decision = decideMint(
+    session ? { ...session, account_created_at: accountCreatedAt } : null,
+    await sha256Hex(nonce),
+    entitlement,
+    new Date()
+  );
   if (decision !== 'ok') return json({ error: decision }, STATUS[decision]);
 
   // Counted only when a key would really be issued, so polling doesn't use it up.

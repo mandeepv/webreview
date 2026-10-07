@@ -1,6 +1,6 @@
 // deno test --node-modules-dir=none supabase/functions/_shared/
 import { assertEquals } from 'jsr:@std/assert@1';
-import { CurrentRow, decideSubscriptionWrite, hasAccess, IncomingEvent, laterOf, PAST_DUE_GRACE_MS } from './entitlement.ts';
+import { CurrentRow, decideSubscriptionWrite, hasAccess, IncomingEvent, isPaidThrough, laterOf, PAST_DUE_GRACE_MS } from './entitlement.ts';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
 const FUTURE = '2027-10-01T12:00:00.000Z';
@@ -99,6 +99,29 @@ Deno.test('cancelled keeps access to the later of existing and incoming period e
   assertEquals(d.kind === 'write' && d.currentPeriodEnd, LATER);
 });
 
+Deno.test('MP-6: an activating event never moves the period end earlier for the same subscription', () => {
+  for (const type of ['renewed', 'active']) {
+    const d = decideSubscriptionWrite(row('active', 'sub_A', LATER), ev(type, 'sub_A', FUTURE), NOW);
+    assertEquals(d.kind === 'write' && d.currentPeriodEnd, LATER, type);
+  }
+  // A later date still moves it on, as every real renewal does.
+  const renewed = decideSubscriptionWrite(row('active', 'sub_A', FUTURE), ev('renewed', 'sub_A', LATER), NOW);
+  assertEquals(renewed.kind === 'write' && renewed.currentPeriodEnd, LATER);
+  // A re-activation after expiry takes the new, later date.
+  const back = decideSubscriptionWrite(row('expired', 'sub_A', PAST), ev('active', 'sub_A', FUTURE), NOW);
+  assertEquals(back.kind === 'write' && back.currentPeriodEnd, FUTURE);
+});
+
+Deno.test('MP-6: a plan change may bring the period end forward (annual → monthly)', () => {
+  const d = decideSubscriptionWrite(row('active', 'sub_A', LATER), ev('plan_changed', 'sub_A', FUTURE, 'monthly'), NOW);
+  assertEquals(d.kind === 'write' && d.currentPeriodEnd, FUTURE);
+});
+
+Deno.test('MP-6: a new subscription takes its own date, not the old one\'s', () => {
+  const d = decideSubscriptionWrite(row('expired', 'sub_A', LATER), ev('active', 'sub_B', FUTURE), NOW);
+  assertEquals(d.kind === 'write' && d.currentPeriodEnd, FUTURE);
+});
+
 Deno.test('expired writes expired', () => {
   const d = decideSubscriptionWrite(row('cancelled', 'sub_A', PAST), ev('expired', 'sub_A', null), NOW);
   assertEquals(d, { kind: 'write', status: 'expired', currentPeriodEnd: PAST, replacesSubscription: false, periodEndFallback: null });
@@ -109,13 +132,28 @@ Deno.test('hasAccess: the access rule the app, checkout and resume share', () =>
   assertEquals(at('active', FUTURE), true);
   assertEquals(at('past_due', FUTURE), true);
   assertEquals(at('cancelled', FUTURE), true); // paid for — keeps access until period end
-  assertEquals(at('active', PAST), false);
+  assertEquals(at('active', PAST), false); // a month past: beyond the late-renewal grace
   assertEquals(at('cancelled', PAST), false);
   assertEquals(at('revoked', FUTURE), false); // refund/chargeback: never
   assertEquals(at('expired', FUTURE), false);
   assertEquals(at('active', null), false);
   assertEquals(hasAccess(null, NOW), false);
   assertEquals(hasAccess(undefined, NOW), false);
+});
+
+Deno.test('AP-3: a late renewal keeps access 6 days for checkout and mint; the webhook treats a new purchase then as a replacement', () => {
+  const twoDaysAgo = new Date(NOW.getTime() - 2 * 24 * 3600 * 1000).toISOString();
+  const late = { status: 'active', current_period_end: twoDaysAgo };
+  assertEquals(hasAccess(late, NOW), true); // the app still lets them in, so checkout must not sell again
+  assertEquals(isPaidThrough(late, NOW), false);
+  // The webhook: B while A is past its date is a replacement, not a duplicate
+  // (a lost cancellation must not get B cancelled); A's own late `renewed`
+  // would then be the duplicate (B-4).
+  const d = decideSubscriptionWrite(row('active', 'sub_A', twoDaysAgo), ev('active', 'sub_B'), NOW);
+  assertEquals(d.kind === 'write' && d.replacesSubscription, true);
+  // Only `active` gets the grace: past_due and cancelled dates are the answer.
+  assertEquals(hasAccess({ status: 'cancelled', current_period_end: twoDaysAgo }, NOW), false);
+  assertEquals(hasAccess({ status: 'past_due', current_period_end: twoDaysAgo }, NOW), false);
 });
 
 Deno.test('P2-17: an older event for the same subscription is ignored once a newer one was applied', () => {

@@ -112,7 +112,7 @@ export default function Home() {
             Refund Policy
           </Link>
           <span aria-hidden>·</span>
-          <a href="mailto:hello@kinderwell.app" className="hover:text-ink/75">
+          <a href="mailto:kinderwellteam@gmail.com" className="hover:text-ink/75">
             Contact Us
           </a>
           <span aria-hidden>·</span>

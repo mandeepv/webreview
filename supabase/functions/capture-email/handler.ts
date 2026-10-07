@@ -9,7 +9,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { isFromProxy } from '../_shared/email.ts';
 import { afterResponse, leadEventId, sendCapiEvent } from '../_shared/meta.ts';
-import { isRateLimited } from '../_shared/ratelimit.ts';
+import { ipBucket, isRateLimited } from '../_shared/ratelimit.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -82,23 +82,27 @@ export async function handler(req: Request): Promise<Response> {
   if (!EMAIL_RE.test(email) || email.length > 254) return json({ error: 'invalid_email' }, 400);
   const answers = cleanAnswers(body.answers);
 
+  // A filled honeypot is a form-filling bot. Answer like a success so it
+  // moves on, but create no account and queue no email (P1-7). BEFORE the
+  // rate limits (IN-5): five bot posts used to use up a real person's
+  // per-address allowance and lock them out of the funnel for an hour.
+  if (body.hp) return json({ userId: crypto.randomUUID() });
+
   // Each capture can create an account and queue marketing email, so a
   // script posting harvested addresses is the abuse case: cap per IP and per
-  // address (P1-7).
-  const ip = body.client_ip ?? '';
+  // address (P1-7). The answer says which, so the page can say how long.
+  const ip = ipBucket(body.client_ip);
   if (
     await isRateLimited(admin, [
       { key: `ce:ip:${ip}`, windowSeconds: 60, max: 10 },
       { key: `ce:ip-hour:${ip}`, windowSeconds: 3600, max: 40 },
-      { key: `ce:email:${email}`, windowSeconds: 3600, max: 5 },
     ])
   ) {
-    return json({ error: 'rate_limited' }, 429);
+    return json({ error: 'rate_limited', retry: 'minute' }, 429);
   }
-
-  // A filled honeypot is a form-filling bot. Answer like a success so it
-  // moves on, but create no account and queue no email (P1-7).
-  if (body.hp) return json({ userId: crypto.randomUUID() });
+  if (await isRateLimited(admin, [{ key: `ce:email:${email}`, windowSeconds: 3600, max: 5 }])) {
+    return json({ error: 'rate_limited', retry: 'hour' }, 429);
+  }
 
   // Waitlist (Android / out-of-range age): store and stop. Deliberately no
   // auth user — these are not customers yet. Only the fields needed to
@@ -122,14 +126,25 @@ export async function handler(req: Request): Promise<Response> {
 
   // Find-or-create the user. RPC first (reliable email lookup), create on miss.
   let userId: string | null = null;
-  const { data: existingId, error: rpcError } = await admin.rpc('get_user_id_by_email', {
-    p_email: email,
-  });
-  if (rpcError) {
-    console.error('get_user_id_by_email failed', rpcError.message);
+  const [{ data: existingId, error: rpcError }, { data: priorSession, error: sessionError }] = await Promise.all([
+    admin.rpc('get_user_id_by_email', { p_email: email }),
+    admin.from('funnel_sessions').select('user_id').eq('id', body.sessionId).maybeSingle(),
+  ]);
+  if (rpcError || sessionError) {
+    console.error('capture lookup failed', (rpcError ?? sessionError)!.message);
     return json({ error: 'lookup_failed' }, 500);
   }
   userId = (existingId as string | null) ?? null;
+
+  // A session that already belongs to one account is never moved to another
+  // (review 2026-10-07, B-3). The upsert below used to re-point user_id to
+  // whoever posted the session id with a different email, so a session id
+  // seen in a link or in Dodo's metadata let someone steer the buyer's
+  // purchase onto their own account. Checked before any account is created.
+  // The browser answers 409 by carrying on under a fresh session id.
+  if (priorSession?.user_id && priorSession.user_id !== userId) {
+    return json({ error: 'session_taken' }, 409);
+  }
 
   if (!userId) {
     const { data, error } = await admin.auth.admin.createUser({

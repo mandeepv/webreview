@@ -35,7 +35,7 @@ import QRCode from 'qrcode';
 import { Eyebrow, LegalFooter, PrimaryButton, RichHeadline, Shell } from '@/components/ui';
 import { config } from '@/lib/config';
 import { getSession, resetSession } from '@/lib/session';
-import { track } from '@/lib/analytics';
+import { resetAnalyticsBeforeNextRun, track } from '@/lib/analytics';
 import { pixel, setPixelUserData } from '@/lib/meta';
 import { PaymentState, paymentStateFrom } from '@/lib/browser';
 import { fetchHandoffLink, type HandoffProof, type MintResult, readProof, startCopy, withTimeout } from '@/lib/handoff';
@@ -119,8 +119,13 @@ export default function WelcomeClient() {
         localStorage.removeItem('kw_purchase_event_id');
       }
       // The handoff proof is kept separately (lib/handoff.ts), so this reset
-      // doesn't stop a refresh from asking for the sign-in link again.
-      if (state === 'confirmed') resetSession();
+      // doesn't stop a refresh from asking for the sign-in link again. The
+      // analytics identity goes before the next funnel run (FE-5), not now:
+      // the rest of this page's events belong to the buyer.
+      if (state === 'confirmed') {
+        resetSession();
+        resetAnalyticsBeforeNextRun();
+      }
     })();
   }, []);
 

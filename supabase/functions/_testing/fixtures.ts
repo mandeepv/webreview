@@ -32,6 +32,8 @@ export type SubscriptionOpts = {
   amount?: number;
   /** Dodo's envelope timestamp (when the event happened). */
   occurredAt?: string;
+  /** metadata.handoff_nonce_hash, as create-checkout sets it (SPEC-21, B-3). */
+  nonceHash?: string;
 };
 
 export function subscriptionEvent(type: string, o: SubscriptionOpts): Json {
@@ -49,6 +51,7 @@ export function subscriptionEvent(type: string, o: SubscriptionOpts): Json {
   if (o.sessionId) d.metadata.funnel_session_id = o.sessionId;
   if (o.eventId) d.metadata.event_id = o.eventId;
   if (o.plan) d.metadata.plan = o.plan;
+  if (o.nonceHash) d.metadata.handoff_nonce_hash = o.nonceHash;
   if (o.plan === 'monthly') {
     d.payment_frequency_interval = 'Month';
     d.recurring_pre_tax_amount = 1299;
@@ -70,12 +73,15 @@ export function paymentEvent(type: string, o: { paymentId: string; subscriptionI
   return e;
 }
 
-export function refundEvent(type: string, o: { paymentId: string; isPartial?: boolean }): Json {
+/** isPartial: null leaves the field out, as a payload that doesn't carry it would. */
+export function refundEvent(type: string, o: { paymentId: string; isPartial?: boolean | null; amount?: number }): Json {
   const e = load('refund.succeeded');
   e.type = type;
   e.data.payment_id = o.paymentId;
   e.data.refund_id = newId('ref');
-  e.data.is_partial = o.isPartial ?? false;
+  if (o.isPartial === null) delete e.data.is_partial;
+  else e.data.is_partial = o.isPartial ?? false;
+  if (o.amount !== undefined) e.data.amount = o.amount;
   e.data.status = type === 'refund.failed' ? 'failed' : 'succeeded';
   return e;
 }
@@ -89,12 +95,22 @@ export function disputeEvent(type: string, o: { paymentId: string }): Json {
   return e;
 }
 
-/** The GET /payments/{id} response, linked to a subscription (or to none). */
-export function paymentResponse(o: { paymentId: string; subscriptionId: string | null }): Json {
+/**
+ * The GET /payments/{id} response, linked to a subscription (or to none).
+ * `refunds` sets the refunds recorded on it (amounts in cents); null drops
+ * the field, as a response without it would.
+ */
+export function paymentResponse(o: {
+  paymentId: string;
+  subscriptionId: string | null;
+  refunds?: Array<{ amount: number; status?: string }> | null;
+}): Json {
   const p = load('payments.get');
   p.payment_id = o.paymentId;
   p.subscription_id = o.subscriptionId;
   p.subscription_ids = o.subscriptionId ? [o.subscriptionId] : [];
+  if (o.refunds === null) delete p.refunds;
+  else if (o.refunds) p.refunds = o.refunds.map((r) => ({ refund_id: newId('ref'), status: 'succeeded', currency: 'USD', ...r }));
   return p;
 }
 

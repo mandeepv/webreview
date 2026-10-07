@@ -10,7 +10,7 @@ describe('/.well-known/apple-app-site-association', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
     const body = await res.json();
     const [detail] = body.applinks.details;
-    expect(detail.appIDs).toEqual(['8B52Q4QNLH.com.kinderwell.app', '8B52Q4QNLH.com.kinderwell.app.dev']);
+    expect(detail.appIDs).toEqual(['8B52Q4QNLH.com.kinderwell.app']);
     expect(detail.components).toEqual([{ '/': '/k/*', comment: expect.any(String) }]);
   });
 });

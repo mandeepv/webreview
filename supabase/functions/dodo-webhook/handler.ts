@@ -27,13 +27,21 @@
 // only), POSTHOG_KEY, POSTHOG_HOST, PRICE_ANNUAL, PRICE_MONTHLY
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { accountPredatesSession } from '../_shared/accounts.ts';
 import { alertOwner, escapeHtml } from '../_shared/email.ts';
 import { cancelDodoSubscription, DODO_BASE } from '../_shared/dodo.ts';
-import { decideSubscriptionWrite, laterOf, STATUS_BY_EVENT } from '../_shared/entitlement.ts';
-import { classifyRefundOrDispute, describePlan as describePlanFrom, PlanSummary } from '../_shared/payment_events.ts';
+import { decideSubscriptionWrite, isPaidThrough, laterOf, STATUS_BY_EVENT } from '../_shared/entitlement.ts';
+import {
+  classifyRefundOrDispute,
+  describePlan as describePlanFrom,
+  PlanSummary,
+  refundedExtent,
+  refundRevokes,
+} from '../_shared/payment_events.ts';
 import { mintHandoffKey } from '../_shared/handoff.ts';
 import { sendCapiEvent } from '../_shared/meta.ts';
 import { profileFromAnswers } from '../_shared/profile.ts';
+import { isRateLimited } from '../_shared/ratelimit.ts';
 import { verifyStandardWebhook } from '../_shared/signature.ts';
 
 const admin = createClient(
@@ -66,8 +74,13 @@ type RefundOrDisputeData = {
   customer?: { customer_id?: string; email?: string }; // refunds only
 };
 
-/** A run that has been 'processing' this long is presumed dead and may be reclaimed. */
-const STALE_PROCESSING_MS = 2 * 60 * 1000;
+/**
+ * A run that has been 'processing' this long is presumed dead and may be
+ * reclaimed. Longer than Supabase's edge wall-clock limit (400 s on paid
+ * plans): reclaiming sooner could start a second run while the first is
+ * still alive (it was 2 minutes — review 2026-10-07, P3).
+ */
+const STALE_PROCESSING_MS = 7 * 60 * 1000;
 
 /** The whole webhook. index.ts serves it; the integration tests call it directly. */
 export async function handler(req: Request): Promise<Response> {
@@ -154,7 +167,10 @@ async function claimWebhook(webhookId: string, eventType: string): Promise<'clai
   return new Response('in progress', { status: 500 });
 }
 
-async function handleSubscription(type: string, data: SubscriptionData, occurredAt: string | null, isRetry = false) {
+/** How often one delivery re-reads and decides again after losing a write to a concurrent one. */
+const MAX_WRITE_ATTEMPTS = 3;
+
+async function handleSubscription(type: string, data: SubscriptionData, occurredAt: string | null, attempt = 1) {
   if (!STATUS_BY_EVENT[type]) return; // updated / paused / unpaused / update_payment_method: no entitlement change in v1
 
   const userId = data.metadata?.supabase_user_id;
@@ -192,55 +208,52 @@ async function handleSubscription(type: string, data: SubscriptionData, occurred
 
   if (decision.kind === 'duplicate') {
     // Two live subscriptions for one person (paid twice inside the webhook
-    // latency window, or on two devices). Stop the newer one billing; the
-    // owner refunds its first charge by hand (P1-3b). Act once, on the
-    // activation event — the rest of its burst would only repeat the alert.
-    if (type !== 'subscription.active' || !data.subscription_id) return;
-    const cancelled = await cancelDodoSubscription(data.subscription_id, 'a duplicate purchase');
-    await alertOwner(
-      'Duplicate purchase — refund the newer subscription',
-      `User ${userId}: ${decision.reason}.\n` +
-        `The newer subscription ${data.subscription_id} was ${cancelled ? 'cancelled' : 'NOT cancelled (see the other alert)'} ` +
-        `so it won't renew. Refund its first payment in the Dodo dashboard.`
-    );
+    // latency window, on two devices, or a renewal retry that finally went
+    // through on an old subscription after they bought a new one). Any
+    // activating event counts — active, renewed or plan_changed (B-4: a
+    // `renewed` used to be dropped silently, billing the customer twice).
+    if (data.subscription_id) await stopDuplicate(userId, data.subscription_id, decision.reason);
     return;
   }
 
-  if (decision.replacesSubscription && current?.cancel_pending && current.dodo_subscription_id) {
-    // The row is about to point at the new subscription, so the sweep will
-    // stop retrying the old one's cancel. Hand it to a human instead.
-    await alertOwner(
-      'Cancel the previous subscription manually',
-      `User ${userId} bought again, but cancelling their previous subscription ` +
-        `${current.dodo_subscription_id} had not succeeded yet. Cancel it in the Dodo dashboard.`
-    );
-  }
+  const fields = {
+    status: decision.status,
+    product_id: data.product_id ?? current?.product_id ?? 'unknown',
+    dodo_customer_id: data.customer?.customer_id ?? current?.dodo_customer_id ?? null,
+    dodo_subscription_id: data.subscription_id ?? current?.dodo_subscription_id ?? null,
+    current_period_end: decision.currentPeriodEnd,
+    last_event_at: decision.replacesSubscription ? occurredAt : laterOf(current?.last_event_at, occurredAt),
+    ...(decision.replacesSubscription ? { cancel_pending: false } : {}),
+    updated_at: new Date().toISOString(),
+  };
 
-  const { error } = await admin.from('entitlements').upsert(
-    {
-      user_id: userId,
-      source: 'dodo',
-      status: decision.status,
-      product_id: data.product_id ?? current?.product_id ?? 'unknown',
-      dodo_customer_id: data.customer?.customer_id ?? current?.dodo_customer_id ?? null,
-      dodo_subscription_id: data.subscription_id ?? current?.dodo_subscription_id ?? null,
-      current_period_end: decision.currentPeriodEnd,
-      last_event_at: decision.replacesSubscription ? occurredAt : laterOf(current?.last_event_at, occurredAt),
-      ...(decision.replacesSubscription ? { cancel_pending: false } : {}),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'user_id,source' }
-  );
+  // Optimistic concurrency (B-4): the write lands only if the row is still
+  // what the decision was made on — absent, or on the same subscription.
+  // Dodo delivers bursts concurrently, and a blind upsert let one first
+  // purchase overwrite another's row moments after it activated: a live
+  // subscription nothing pointed at, billing with no alert. A delivery that
+  // loses reads the row again and decides again; the other subscription is
+  // then a duplicate. The same-subscription burst loses only its INSERT
+  // (23505) and then updates the winner's row (the W2b test).
+  let error: { code?: string; message: string } | null;
+  let lost: boolean;
+  if (!current) {
+    ({ error } = await admin.from('entitlements').insert({ user_id: userId, source: 'dodo', ...fields }));
+    lost = error?.code === '23505';
+  } else {
+    const base = admin.from('entitlements').update(fields).eq('user_id', userId).eq('source', 'dodo');
+    const guarded = current.dodo_subscription_id
+      ? base.eq('dodo_subscription_id', current.dodo_subscription_id)
+      : base.is('dodo_subscription_id', null);
+    const { data: updated, error: updateError } = await guarded.select('user_id');
+    error = updateError;
+    lost = updateError?.code === '23505' || (!updateError && (!updated || updated.length === 0));
+  }
+  if (lost) {
+    if (attempt >= MAX_WRITE_ATTEMPTS) throw new Error(`entitlement write lost ${attempt} times to concurrent deliveries`);
+    return handleSubscription(type, data, occurredAt, attempt + 1);
+  }
   if (error) {
-    if (error.code === '23505' && !isRetry) {
-      // Dodo sends the first-purchase burst concurrently. Two deliveries that
-      // both read "no row" both INSERT; the upsert's ON CONFLICT covers
-      // (user_id, source) but not the unique dodo_subscription_id, so the
-      // second one fails here. The winner's row is committed by now: read it
-      // and decide again instead of returning 500 and waiting for Dodo's
-      // retry (caught by the W2b integration test).
-      return handleSubscription(type, data, occurredAt, true);
-    }
     if (error.code === '23503') {
       // Foreign-key violation: the auth user was deleted (account deletion
       // in the app cascades the entitlement away) but Dodo is still billing.
@@ -256,7 +269,17 @@ async function handleSubscription(type: string, data: SubscriptionData, occurred
       );
       return;
     }
-    throw new Error(`entitlement upsert failed: ${error.message}`);
+    throw new Error(`entitlement write failed: ${error.message}`);
+  }
+
+  if (decision.replacesSubscription && current?.cancel_pending && current.dodo_subscription_id) {
+    // The row now points at the new subscription, so the sweep has stopped
+    // retrying the old one's cancel. Hand it to a human instead.
+    await alertOwner(
+      'Cancel the previous subscription manually',
+      `User ${userId} bought again, but cancelling their previous subscription ` +
+        `${current.dodo_subscription_id} had not succeeded yet. Cancel it in the Dodo dashboard.`
+    );
   }
 
   if (decision.periodEndFallback) {
@@ -296,14 +319,40 @@ async function fireFirstActivation(userId: string, subscriptionId: string, data:
     .or(`activated_subscription_id.is.null,activated_subscription_id.neq.${subscriptionId}`)
     .select('user_id');
   if (error) throw new Error(`activation claim failed: ${error.message}`);
-  if (!claimed || claimed.length === 0) return; // another delivery already fired them
+  if (!claimed || claimed.length === 0) {
+    // Usually a sibling delivery of the same burst already fired them. But if
+    // the row has since moved to ANOTHER subscription that still has access,
+    // this one is live with nothing pointing at it: a duplicate (B-4).
+    const { data: row, error: rowError } = await admin
+      .from('entitlements')
+      .select('status, dodo_subscription_id, current_period_end')
+      .eq('user_id', userId)
+      .eq('source', 'dodo')
+      .maybeSingle();
+    if (rowError) throw new Error(`entitlement re-read failed: ${rowError.message}`);
+    if (row?.dodo_subscription_id && row.dodo_subscription_id !== subscriptionId && isPaidThrough(row, new Date())) {
+      await stopDuplicate(
+        userId,
+        subscriptionId,
+        `${subscriptionId} activated while ${row.dodo_subscription_id} holds the entitlement`
+      );
+    }
+    return;
+  }
 
   const metadata = data.metadata ?? {};
+  let sessionCreatedAt: string | null = null;
   if (metadata.funnel_session_id) {
-    await admin
+    // The nonce hash BEFORE purchased_at: mint-handoff reads a session with
+    // purchased_at set as final, so the hash must already be there.
+    await saveHandoffNonce(metadata.funnel_session_id, metadata.handoff_nonce_hash);
+    const { data: session } = await admin
       .from('funnel_sessions')
       .update({ purchased_at: new Date().toISOString() })
-      .eq('id', metadata.funnel_session_id);
+      .eq('id', metadata.funnel_session_id)
+      .select('created_at')
+      .maybeSingle();
+    sessionCreatedAt = session?.created_at ?? null;
     await createAppProfile(userId, metadata.funnel_session_id);
   }
 
@@ -312,6 +361,24 @@ async function fireFirstActivation(userId: string, subscriptionId: string, data:
   const { data: userData } = await admin.auth.admin.getUserById(userId);
   const accountEmail = userData?.user?.email ?? '';
   const checkoutEmail = data.customer?.email ?? '';
+
+  // B-1: the purchase landed on an account that existed before this funnel
+  // session — an app user buying on the web, a returning lead, or someone
+  // who typed another person's email and paid. Whoever paid may not own the
+  // account, so no sign-in link (below); the owner's inbox gets the email
+  // and the email-code steps. No session found at all: no link either (no
+  // proof), but nothing to tell the owner about.
+  const existingAccount = accountPredatesSession(userData?.user?.created_at, sessionCreatedAt);
+  if (existingAccount && sessionCreatedAt) {
+    await alertOwner(
+      'Web purchase on an existing account',
+      `User ${userId} bought subscription ${subscriptionId} on the web, but their account was created ` +
+        `${userData?.user?.created_at ?? '(unknown)'}, before this funnel session (${sessionCreatedAt}). ` +
+        `Usually an app user or a returning lead buying on the web — then nothing to do. The welcome ` +
+        `email went to the account's own inbox WITHOUT the one-tap sign-in link. If the account owner ` +
+        `writes in about a purchase they didn't make, someone paid with their email: refund it.`
+    );
+  }
   if (accountEmail && checkoutEmail && accountEmail.toLowerCase() !== checkoutEmail.toLowerCase()) {
     await alertOwner(
       'Checkout email differs from account email',
@@ -325,16 +392,66 @@ async function fireFirstActivation(userId: string, subscriptionId: string, data:
   // SPEC-21: the email's "Open Kinderwell" button signs the buyer straight
   // in. That is a login credential, so it goes only to the account's own
   // inbox: when Dodo's email differs (P1-2) the email keeps just the
-  // email-code steps. A failed mint does the same.
+  // email-code steps. So does a purchase on an existing account (B-1, above)
+  // and a failed mint.
   const sameInbox =
     !!accountEmail && (!checkoutEmail || checkoutEmail.toLowerCase() === accountEmail.toLowerCase());
-  const signInLink = sameInbox ? await mintHandoffKey(admin, userId, 'email').catch(() => null) : null;
+  const signInLink =
+    sameInbox && !existingAccount ? await mintHandoffKey(admin, userId, 'email').catch(() => null) : null;
   // Side effects are best-effort: a failed email must not 500 the webhook
-  // (that would retry the entitlement write it already made).
-  await Promise.allSettled([
+  // (that would retry the entitlement write it already made). But they run
+  // once — the activation is claimed — so a welcome email that still fails
+  // after a retry goes to a human (review 2026-10-07, MP-5): it carries the
+  // buyer's only App Store link and sign-in steps.
+  const [email] = await Promise.allSettled([
     sendHandoffEmail(accountEmail || checkoutEmail, checkoutEmail, plan, signInLink),
     fireCapiPurchase(userId, accountEmail || checkoutEmail, metadata, plan),
   ]);
+  const emailError = email.status === 'rejected' ? String(email.reason) : email.value;
+  if (emailError) {
+    await alertOwner(
+      'Welcome email failed — send the app steps by hand',
+      `User ${userId} paid (subscription ${subscriptionId}) but the welcome email to ` +
+        `${accountEmail || checkoutEmail || '(no address)'} was not sent: ${emailError}. Email them the ` +
+        `App Store link and "sign in with ${accountEmail || 'their email'}" steps. The paid-but-not-` +
+        `signed-in nudge (winback-sweep) follows in a day either way.`
+    );
+  }
+}
+
+/**
+ * A second live subscription for someone already entitled: stop it billing
+ * and have the owner refund its charge (P1-3b, B-4). Acts once per
+ * subscription a day — the rest of its burst (active, renewed, plan_changed,
+ * Dodo's retries) would only repeat the cancel and the alert. The dedupe
+ * fails open: a database hiccup costs at most a second alert.
+ */
+async function stopDuplicate(userId: string, subscriptionId: string, reason: string) {
+  if (await isRateLimited(admin, [{ key: `dup:${subscriptionId}`, windowSeconds: 86_400, max: 1 }])) return;
+  const cancelled = await cancelDodoSubscription(subscriptionId, 'a duplicate purchase');
+  await alertOwner(
+    'Duplicate purchase — refund the extra subscription',
+    `User ${userId}: ${reason}.\n` +
+      `Subscription ${subscriptionId} (not the one their access is on) was ` +
+      `${cancelled ? 'cancelled' : 'NOT cancelled (see the other alert)'} so it won't renew. ` +
+      `Refund its latest charge in the Dodo dashboard.`
+  );
+}
+
+/**
+ * SPEC-21: puts the PAID checkout's handoff-nonce hash (create-checkout put
+ * it in that checkout's metadata) on the funnel session, so only the browser
+ * that created this checkout can mint the buyer's welcome-page sign-in link
+ * (B-3). No hash, or a malformed one, clears it: no proof, no link. Its own
+ * write: if it fails (say the handoff_keys migration isn't applied yet) only
+ * the welcome-page link is lost; the email code still signs them in.
+ */
+async function saveHandoffNonce(funnelSessionId: string, nonceHash: string | undefined) {
+  const { error } = await admin
+    .from('funnel_sessions')
+    .update({ handoff_nonce_hash: /^[0-9a-f]{64}$/.test(nonceHash ?? '') ? nonceHash : null })
+    .eq('id', funnelSessionId);
+  if (error) console.error('handoff nonce save failed', error.message);
 }
 
 /**
@@ -396,18 +513,40 @@ async function handleRefundOrDispute(type: string, data: RefundOrDisputeData) {
     return;
   }
 
-  if (action === 'alert_partial_refund') {
-    // A partial refund is a goodwill gesture, not "give me my money back" —
-    // never cut access automatically for one.
-    await alertOwner(
-      'Partial refund issued — access left unchanged',
-      `Payment ${paymentId ?? '(unknown)'} was partially refunded. Access and the subscription ` +
-        `were NOT changed. Revoke manually if that was the intent.`
-    );
-    return;
+  // payment_id → the payment: its subscription, and for a refund, how much
+  // of it has been refunded in all. Throws on an API failure so Dodo retries.
+  const payment = paymentId ? await fetchPayment(paymentId) : null;
+
+  if (action === 'check_refund_total') {
+    const extent = refundedExtent(payment);
+    if (!refundRevokes(data.is_partial, extent)) {
+      // A partial refund is a goodwill gesture, not "give me my money back" —
+      // never cut access automatically for one.
+      await alertOwner(
+        'Partial refund issued — access left unchanged',
+        `Payment ${paymentId ?? '(unknown)'} was partially refunded` +
+          `${data.is_partial === undefined ? ' (Dodo did not say partial; the payment shows money left)' : ''}. ` +
+          `Access and the subscription were NOT changed. Revoke manually if that was the intent.`
+      );
+      return;
+    }
+    if (data.is_partial === true) {
+      await alertOwner(
+        'Partial refunds add up to the whole payment — access revoked',
+        `Payment ${paymentId}: the refunds now total the full amount, so access is revoked and the ` +
+          `subscription cancelled, as for a full refund (MP-4). Restore access by hand if that was not the intent.`
+      );
+    } else if (extent === 'unknown') {
+      await alertOwner(
+        'Refund without is_partial — treated as a full refund',
+        `Payment ${paymentId}: Dodo's refund event did not say whether it was partial, and the payment ` +
+          `lookup did not show the refunded total. Access was revoked and the subscription cancelled, ` +
+          `so nobody is billed again. If it was a goodwill partial refund, restore access by hand.`
+      );
+    }
   }
 
-  const subscriptionId = paymentId ? await subscriptionIdForPayment(paymentId) : null;
+  const subscriptionId = payment?.subscription_id ?? null;
   if (!subscriptionId) {
     // No guessing by customer id: with an edited checkout email that could
     // revoke a different account than the one refunded (P3-27).
@@ -464,23 +603,44 @@ async function handleRefundOrDispute(type: string, data: RefundOrDisputeData) {
   }
 }
 
-/** payment_id → subscription_id via the Dodo API. Throws on API failure so Dodo retries the webhook. */
-async function subscriptionIdForPayment(paymentId: string): Promise<string | null> {
+type DodoPayment = { subscription_id?: string | null; total_amount?: unknown; refunds?: unknown };
+
+/** GET /payments/{id}: null when Dodo has no such payment. Throws on API failure so Dodo retries the webhook. */
+async function fetchPayment(paymentId: string): Promise<DodoPayment | null> {
   const res = await fetch(`${DODO_BASE}/payments/${encodeURIComponent(paymentId)}`, {
     headers: { Authorization: `Bearer ${Deno.env.get('DODO_API_KEY')}` },
     signal: AbortSignal.timeout(15_000),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`payment lookup ${paymentId} failed: ${res.status}`);
-  const payment = (await res.json()) as { subscription_id?: string | null };
-  return payment.subscription_id ?? null;
+  return (await res.json()) as DodoPayment;
+}
+
+/**
+ * What unlinked_purchases keeps of a payload: the ids and amounts a human
+ * needs to find the purchase in Dodo, and our own metadata — not the
+ * customer's name, email or billing address (they are one click away in the
+ * Dodo dashboard by customer_id; review 2026-10-07, P3).
+ */
+export function unlinkedPayload(data: unknown): Record<string, unknown> {
+  const d = (data ?? {}) as Record<string, unknown>;
+  const keep = [
+    'subscription_id', 'payment_id', 'refund_id', 'dispute_id', 'product_id', 'status',
+    'next_billing_date', 'recurring_pre_tax_amount', 'amount', 'currency', 'is_partial',
+    'payment_frequency_interval', 'metadata',
+  ];
+  const out: Record<string, unknown> = {};
+  for (const k of keep) if (d[k] !== undefined) out[k] = d[k];
+  const customer = d.customer as { customer_id?: unknown } | undefined;
+  if (customer?.customer_id) out.customer = { customer_id: customer.customer_id };
+  return out;
 }
 
 async function parkUnlinked(data: unknown, subscriptionId: string | null | undefined, reason: string) {
   console.error('UNLINKED PURCHASE:', reason);
   await admin.from('unlinked_purchases').insert({
     dodo_subscription_id: subscriptionId ?? null,
-    payload: data,
+    payload: unlinkedPayload(data),
     reason,
   });
   await captureServerEvent('system', 'web_purchase_unlinked', { reason });
@@ -493,14 +653,16 @@ async function parkUnlinked(data: unknown, subscriptionId: string | null | undef
 
 // ── Side effects ─────────────────────────────────────────────────────────────
 
+/** Sends the welcome email. Returns null when sent (or email isn't configured), else why it failed. */
 async function sendHandoffEmail(
   accountEmail: string,
   checkoutEmail: string,
   plan: PlanSummary,
   signInLink: string | null
-) {
+): Promise<string | null> {
   const apiKey = Deno.env.get('RESEND_API_KEY');
-  if (!apiKey || !accountEmail) return;
+  if (!apiKey) return null; // email not configured (local dev): nothing to alert about
+  if (!accountEmail) return 'no address to send to';
   const appStoreUrl = Deno.env.get('APP_STORE_URL') ?? '';
   const siteUrl = (Deno.env.get('SITE_URL') ?? '').replace(/\/+$/, '');
   const manageLabel = `${siteUrl.replace(/^https?:\/\//, '')}/manage`;
@@ -510,9 +672,10 @@ async function sendHandoffEmail(
     recipients.push(checkoutEmail);
   }
 
-  const res = await fetch('https://api.resend.com/emails', {
+  const send = () => fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       from: Deno.env.get('EMAIL_FROM') ?? 'Kinderwell <hello@example.com>',
       // Replies go to a real inbox — this email explicitly invites them.
@@ -534,7 +697,22 @@ async function sendHandoffEmail(
 </div>`,
     }),
   });
-  if (!res.ok) console.error('handoff email failed', res.status, await res.text().catch(() => ''));
+  // One retry for a server error or a dropped connection; a 4xx (a bad
+  // address, a config problem) won't get better by asking again.
+  let failure: string | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await send();
+      if (res.ok) return null;
+      failure = `Resend ${res.status}: ${await res.text().catch(() => '')}`.slice(0, 300);
+      if (res.status < 500) break;
+    } catch (err) {
+      failure = `network error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (attempt === 1) await new Promise((r) => setTimeout(r, 1500));
+  }
+  console.error('handoff email failed', failure);
+  return failure;
 }
 
 /**
@@ -602,9 +780,18 @@ async function captureServerEvent(
   const key = Deno.env.get('POSTHOG_KEY');
   if (!key) return;
   const host = Deno.env.get('POSTHOG_HOST') ?? 'https://us.i.posthog.com';
+  // The same environment tags the app and the website register (XR-7), so
+  // a dashboard filtered on environment = prod keeps these events.
+  const url = Deno.env.get('SUPABASE_URL') ?? '';
+  const environment = url.includes('<PROD_PROJECT_REF>') ? 'prod' : url.includes('<DEV_PROJECT_REF>') ? 'dev' : 'unknown';
   await fetch(`${host}/capture/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: key, event, distinct_id: distinctId, properties }),
+    body: JSON.stringify({
+      api_key: key,
+      event,
+      distinct_id: distinctId,
+      properties: { ...properties, environment, app_env: environment, surface: 'server' },
+    }),
   }).catch((err) => console.error('posthog capture failed', err));
 }
